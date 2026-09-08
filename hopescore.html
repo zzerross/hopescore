@@ -1791,22 +1791,33 @@ const GH_REPO_NAME = 'hopescore';
 const GH_REPO_BRANCH = 'main';
 const GH_FILE_PATH = 'hopescore.html';
 
+// The token is shared across editors (simplest setup for people without
+// their own GitHub account), so it alone can't say who made a change --
+// the editor's name is asked for separately and stamped on the commit
+// itself (message + git author) so the history still shows who did what.
 const GH_TOKEN_KEY = 'hopescore_gh_token_v1';
+const GH_NAME_KEY = 'hopescore_gh_editor_name_v1';
 function getGhToken(){
   try{ return localStorage.getItem(GH_TOKEN_KEY) || null; }catch(e){ return null; }
 }
 function setGhToken(t){ localStorage.setItem(GH_TOKEN_KEY, t); }
 function clearGhToken(){ localStorage.removeItem(GH_TOKEN_KEY); }
+function getGhEditorName(){
+  try{ return localStorage.getItem(GH_NAME_KEY) || null; }catch(e){ return null; }
+}
+function setGhEditorName(n){ localStorage.setItem(GH_NAME_KEY, n); }
 
 function utf8ToBase64(str){ return btoa(unescape(encodeURIComponent(str))); }
 function base64ToUtf8(b64){ return decodeURIComponent(escape(atob(b64.replace(/\n/g,'')))); }
 
 function openGhSettingsModal(onSaved){
   const existingToken = getGhToken();
+  const existingName = getGhEditorName();
   modalBox.style.maxWidth = '380px';
   modalBox.innerHTML = `
     <h3>Publish to GitHub</h3>
-    <p class="msg">Paste a personal access token with write access to ${GH_REPO_OWNER}/${GH_REPO_NAME} (Settings → Developer settings → Personal access tokens on GitHub). It's stored only in this browser.</p>
+    <p class="msg">Your name (shown on commits) and a personal access token with write access to ${GH_REPO_OWNER}/${GH_REPO_NAME}. Both are stored only in this browser.</p>
+    <input type="text" id="ghName" placeholder="Your name" value="${escapeHtml(existingName||'')}">
     <input type="password" id="ghToken" placeholder="Personal access token" value="${escapeHtml(existingToken||'')}">
     <div class="modal-actions">
       <button class="iconbtn" id="ghCancel">Cancel</button>
@@ -1819,8 +1830,10 @@ function openGhSettingsModal(onSaved){
     document.getElementById('ghForget').onclick = ()=>{ clearGhToken(); closeModal(); toast('Token forgotten'); };
   }
   document.getElementById('ghSave').onclick = ()=>{
+    const name = document.getElementById('ghName').value.trim();
     const token = document.getElementById('ghToken').value.trim();
-    if (!token){ toast('Paste a token first'); return; }
+    if (!name || !token){ toast('Enter your name and paste a token'); return; }
+    setGhEditorName(name);
     setGhToken(token);
     closeModal();
     if (onSaved) onSaved();
@@ -1829,7 +1842,8 @@ function openGhSettingsModal(onSaved){
 
 async function publishToGithub(){
   const token = getGhToken();
-  if (!token){ openGhSettingsModal(()=> publishToGithub()); return; }
+  const editorName = getGhEditorName();
+  if (!token || !editorName){ openGhSettingsModal(()=> publishToGithub()); return; }
   const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list -- live for everyone who opens the hosted site. Continue?`, 'Publish');
   if (!ok) return;
   toast('Publishing…');
@@ -1855,14 +1869,26 @@ async function publishToGithub(){
     });
     const newBlock = `${startMarker}\n  const seedSongs = ${JSON.stringify(songsForExport, null, 2)};\n  ${endMarker}`;
     const newText = currentText.slice(0, startIdx) + newBlock + currentText.slice(endIdx + endMarker.length);
+    // committer stays whoever the shared token belongs to (GitHub requires
+    // that to match the authenticated account); author is the actual editor,
+    // stamped by name only -- a made-up but stable local email keeps commits
+    // from all sharing the token's own account grouped by person in `git log`.
+    // A slugified name would collapse to nothing for non-ASCII names (e.g.
+    // Korean), producing an invalid "@hopescore.local" local-part. A stable
+    // hash of the name is always valid ASCII and still maps 1:1 with each
+    // distinct name -- the visible attribution is author.name anyway.
+    let nameHash = 0;
+    for (let i=0;i<editorName.length;i++) nameHash = (nameHash*31 + editorName.charCodeAt(i)) >>> 0;
+    const authorEmail = `editor-${nameHash.toString(36)}@hopescore.local`;
     const putRes = await fetch(apiBase, {
       method: 'PUT',
       headers: { ...authHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: `Update songs from HopeScore app (${STATE.songs.length} songs)`,
+        message: `Update songs from HopeScore app (${STATE.songs.length} songs) — ${editorName}`,
         content: utf8ToBase64(newText),
         sha: fileData.sha,
         branch: GH_REPO_BRANCH,
+        author: { name: editorName, email: authorEmail },
       }),
     });
     if (!putRes.ok){
