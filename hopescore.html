@@ -126,6 +126,9 @@
 
   main{ flex:1; width:100%; }
   .wrap{ max-width:820px; margin:0 auto; padding:28px 20px 80px; }
+  /* The chord/lyric view wants to use as much of the screen as it can, so
+     the song view trims the outer padding much tighter than list/edit. */
+  .wrap.song-view{ padding:6px 6px 24px; }
 
   /* ---------- list view ---------- */
   .list-head{ display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:18px; flex-wrap:wrap; }
@@ -194,7 +197,7 @@
 
   .chart-card{
     border:1px solid var(--paper-line); border-radius:16px; background:var(--surface);
-    padding:26px 30px; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    padding:14px; box-shadow: 0 1px 2px rgba(0,0,0,.04);
     overflow:hidden;
   }
   .chart{ display:flex; white-space:pre; max-width:100%; }
@@ -1147,6 +1150,7 @@ function go(r){ route = r; render(); window.scrollTo(0,0); }
 
 function render(){
   renderTopbar();
+  viewRoot.classList.toggle('song-view', route.view==='song');
   if (route.view==='list') renderListView();
   else if (route.view==='edit') renderEditView(route.songId||null);
   else if (route.view==='song') renderSongView(route.songId);
@@ -1345,7 +1349,7 @@ function renderEditView(songId){
     const song = { title: fTitle.value||'(Untitled)', description: fDesc.value, body: bodyInput.value, keySemitone: ks, keyIsMinor: km, keyPreferFlat: !!pf };
     const rows = computeSongRows(song, 'original', null);
     requestAnimationFrame(()=>{
-      const boxWidth = previewCard.clientWidth - 60;
+      const boxWidth = previewCard.clientWidth - 28;   // minus 14px+14px horizontal padding
       if (previewPrefs.fitMode === 'wrap'){
         previewCard.style.height = 'auto';
         previewCard.style.overflow = 'visible';
@@ -1355,7 +1359,7 @@ function renderEditView(songId){
         const cardHeight = Math.max(160, window.innerHeight - top - 24);
         previewCard.style.height = cardHeight + 'px';
         previewCard.style.overflow = 'hidden';
-        const boxHeight = cardHeight - 52;
+        const boxHeight = cardHeight - 28;           // minus 14px+14px vertical padding
         const result = layoutChart(preview, rows, previewPrefs.columns, boxWidth, boxHeight, {fitMode:'auto'});
         if (result.scrolled){
           previewCard.style.height = 'auto';
@@ -1457,7 +1461,7 @@ function renderSongView(songId){
   function repaint(){
     const rows = computeSongRows(song, prefs.mode, prefs.target);
     requestAnimationFrame(()=>{
-      const boxWidth = chartCard.clientWidth - 60;   // minus 30px+30px horizontal padding
+      const boxWidth = chartCard.clientWidth - 28;   // minus 14px+14px horizontal padding
       if (prefs.fitMode === 'wrap'){
         chartCard.style.height = 'auto';
         chartCard.style.overflow = 'visible';
@@ -1467,7 +1471,7 @@ function renderSongView(songId){
         const cardHeight = Math.max(160, window.innerHeight - top - 24);
         chartCard.style.height = cardHeight + 'px';
         chartCard.style.overflow = 'hidden';
-        const boxHeight = cardHeight - 52;           // minus 26px+26px vertical padding
+        const boxHeight = cardHeight - 28;           // minus 14px+14px vertical padding
         const result = layoutChart(chartEl, rows, prefs.columns, boxWidth, boxHeight, {fitMode:'auto'});
         if (result.scrolled){
           // Even the smallest usable size couldn't flow everything into the
