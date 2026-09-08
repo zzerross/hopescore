@@ -625,6 +625,12 @@ function getGhEditorName(){
   try{ return localStorage.getItem(GH_NAME_KEY) || null; }catch(e){ return null; }
 }
 function setGhEditorName(n){ localStorage.setItem(GH_NAME_KEY, n); }
+function clearGhEditorName(){ localStorage.removeItem(GH_NAME_KEY); }
+// "Logged in as an editor" = both a name and a token are on file. Song
+// add/edit/delete controls are hidden from everyone else -- viewers can
+// still browse, build a setlist, and present, just not touch the library.
+function isEditorLoggedIn(){ return !!(getGhToken() && getGhEditorName()); }
+function ghLogout(){ clearGhToken(); clearGhEditorName(); }
 
 function loadState(){
   try{
@@ -1265,6 +1271,12 @@ let activeSongRepaint = null;
 function go(r){ route = r; render(); window.scrollTo(0,0); }
 
 function render(){
+  // Defensive: the edit view is only reachable through editor-gated buttons,
+  // but route state could in principle point here some other way (e.g. a
+  // stale reference after logging out) -- bounce back rather than expose it.
+  if (route.view==='edit' && !isEditorLoggedIn()){
+    route = { view: route.songId ? 'song' : 'list', songId: route.songId };
+  }
   renderTopbar();
   viewRoot.classList.toggle('song-view', route.view==='song');
   if (route.view==='list') renderListView();
@@ -1290,14 +1302,20 @@ function renderTopbar(){
 function renderListView(){
   const wrap = document.createElement('div');
 
+  const editor = isEditorLoggedIn();
   const slot = document.getElementById('topbarListActions');
   slot.innerHTML = `
     <button class="iconbtn" id="btnSetlist" title="Edit setlist">🎵<span class="btn-badge" id="setlistCount">${STATE.setlist.length}</span></button>
     <button class="iconbtn" id="btnClearSetlist" title="Clear setlist" ${STATE.setlist.length? '' : 'disabled'}>🧹</button>
     <button class="iconbtn primary" id="btnPresent" title="Present fullscreen" ${STATE.setlist.length? '' : 'disabled'}>▶</button>
+    ${editor ? `
     <button class="iconbtn primary" id="btnAdd" title="New song">+</button>
     <button class="iconbtn danger" id="btnDeleteSelected" title="Delete the songs currently numbered in the setlist" ${STATE.setlist.length? '' : 'disabled'}>🗑</button>
-    <button class="iconbtn" id="btnPublish" title="Publish the current song list to GitHub (admin)">↑</button>`;
+    <button class="iconbtn" id="btnPublish" title="Publish the current song list to GitHub">↑</button>
+    <button class="iconbtn" id="btnGhLogout" title="Log out (${escapeHtml(getGhEditorName()||'')})">🔓</button>
+    ` : `
+    <button class="iconbtn" id="btnEditorLogin" title="Log in as editor to add/edit/delete songs">🔑</button>
+    `}`;
   const setlistBtn = slot.querySelector('#btnSetlist');
   const setlistCount = slot.querySelector('#setlistCount');
   const clearSetlistBtn = slot.querySelector('#btnClearSetlist');
@@ -1306,7 +1324,7 @@ function renderListView(){
   function refreshHeaderCounts(){
     setlistCount.textContent = STATE.setlist.length;
     clearSetlistBtn.disabled = STATE.setlist.length===0;
-    deleteSelectedBtn.disabled = STATE.setlist.length===0;
+    if (deleteSelectedBtn) deleteSelectedBtn.disabled = STATE.setlist.length===0;
     presentBtn.disabled = STATE.setlist.length===0;
   }
 
@@ -1323,7 +1341,9 @@ function renderListView(){
     const q = (filter||'').trim().toLowerCase();
     const songs = STATE.songs.filter(s=> !q || s.title.toLowerCase().includes(q));
     if (songs.length===0){
-      listEl.innerHTML = `<div class="empty-state">${STATE.songs.length? 'No songs match your search' : 'No songs yet. Tap "+ New" to add your first one.'}</div>`;
+      const emptyMsg = STATE.songs.length ? 'No songs match your search'
+        : (editor ? 'No songs yet. Tap "+" to add your first one.' : 'No songs yet.');
+      listEl.innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
       return;
     }
     for (const s of songs){
@@ -1352,8 +1372,30 @@ function renderListView(){
   paint('');
   search.addEventListener('input', ()=>paint(search.value));
 
-  slot.querySelector('#btnAdd').addEventListener('click', ()=> go({view:'edit', songId:null}));
-  slot.querySelector('#btnPublish').addEventListener('click', publishToGithub);
+  if (editor){
+    slot.querySelector('#btnAdd').addEventListener('click', ()=> go({view:'edit', songId:null}));
+    slot.querySelector('#btnPublish').addEventListener('click', publishToGithub);
+    slot.querySelector('#btnGhLogout').addEventListener('click', async ()=>{
+      const ok = await confirmModal('Log out', `Log out ${getGhEditorName()}? You'll need your token again to make changes.`, 'Log out');
+      if (!ok) return;
+      ghLogout();
+      render();
+    });
+    deleteSelectedBtn.addEventListener('click', async ()=>{
+      const targets = STATE.setlist.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
+      if (targets.length===0) return;
+      const names = targets.map(s=>s.title).join(', ');
+      const ok = await confirmModal('Delete selected songs', `Permanently delete ${targets.length} song(s): ${names}? This can't be undone.`);
+      if (!ok) return;
+      const idsToDelete = new Set(STATE.setlist);
+      STATE.songs = STATE.songs.filter(s=>!idsToDelete.has(s.id));
+      STATE.setlist = [];
+      saveState();
+      renderListView();
+    });
+  } else {
+    slot.querySelector('#btnEditorLogin').addEventListener('click', ()=> openGhSettingsModal(()=> render()));
+  }
   setlistBtn.addEventListener('click', openSetlistModal);
   clearSetlistBtn.addEventListener('click', async ()=>{
     const ok = await confirmModal('Clear setlist', 'Remove all songs from the setlist? You can add them again anytime.', 'Clear');
@@ -1362,18 +1404,6 @@ function renderListView(){
     saveState();
     refreshHeaderCounts();
     paint(search.value);
-  });
-  deleteSelectedBtn.addEventListener('click', async ()=>{
-    const targets = STATE.setlist.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
-    if (targets.length===0) return;
-    const names = targets.map(s=>s.title).join(', ');
-    const ok = await confirmModal('Delete selected songs', `Permanently delete ${targets.length} song(s): ${names}? This can't be undone.`);
-    if (!ok) return;
-    const idsToDelete = new Set(STATE.setlist);
-    STATE.songs = STATE.songs.filter(s=>!idsToDelete.has(s.id));
-    STATE.setlist = [];
-    saveState();
-    renderListView();
   });
   presentBtn.addEventListener('click', ()=> openPresent(STATE.setlist, 0));
 
@@ -1569,7 +1599,7 @@ function renderSongView(songId){
     </div>
     ${videoIds.length && canEmbed ? `<button class="iconbtn ${getYoutubeEnabled()?'primary':''}" id="videoToggleBtn" title="Show/hide the YouTube video for this song -- remembered on this device">📺</button>` : ''}
     <button class="iconbtn primary" id="presentOne" title="Present fullscreen">▶</button>
-    <button class="iconbtn" id="editSongBtn" title="Edit song">✎</button>`;
+    ${isEditorLoggedIn() ? `<button class="iconbtn" id="editSongBtn" title="Edit song">✎</button>` : ''}`;
 
   const showVideo = canEmbed && videoIds.length && getYoutubeEnabled();
   const videoWidth = VIDEO_SIZES[getVideoSize()];
@@ -1620,9 +1650,11 @@ function renderSongView(songId){
     openPresent(idx===-1? [song.id] : STATE.setlist, idx===-1?0:idx);
   });
   slot.querySelector('#keyBadgeBtn').addEventListener('click', openKeyModal);
-  slot.querySelector('#editSongBtn').addEventListener('click', ()=>{
-    go({view:'edit', songId: song.id});
-  });
+  if (isEditorLoggedIn()){
+    slot.querySelector('#editSongBtn').addEventListener('click', ()=>{
+      go({view:'edit', songId: song.id});
+    });
+  }
 
   const chartEl = document.getElementById('songChart');
   const chartCard = chartEl.parentElement;
@@ -1830,27 +1862,44 @@ function openGhSettingsModal(onSaved){
   const existingName = getGhEditorName();
   modalBox.style.maxWidth = '380px';
   modalBox.innerHTML = `
-    <h3>Publish to GitHub</h3>
+    <h3>Editor login</h3>
     <p class="msg">Your name (shown on commits) and a personal access token with write access to ${GH_REPO_OWNER}/${GH_REPO_NAME}. Both are stored only in this browser.</p>
     <input type="text" id="ghName" placeholder="Your name" value="${escapeHtml(existingName||'')}">
     <input type="password" id="ghToken" placeholder="Personal access token" value="${escapeHtml(existingToken||'')}">
     <div class="modal-actions">
       <button class="iconbtn" id="ghCancel">Cancel</button>
-      ${existingToken ? `<button class="iconbtn danger" id="ghForget">Forget token</button>` : ''}
+      ${existingToken ? `<button class="iconbtn danger" id="ghForget">Log out</button>` : ''}
       <button class="iconbtn primary" id="ghSave">Save</button>
     </div>`;
   modalBackdrop.classList.add('open');
   document.getElementById('ghCancel').onclick = closeModal;
   if (existingToken){
-    document.getElementById('ghForget').onclick = ()=>{ clearGhToken(); closeModal(); toast('Token forgotten'); };
+    document.getElementById('ghForget').onclick = ()=>{ ghLogout(); closeModal(); toast('Logged out'); render(); };
   }
-  document.getElementById('ghSave').onclick = ()=>{
+  document.getElementById('ghSave').onclick = async ()=>{
     const name = document.getElementById('ghName').value.trim();
     const token = document.getElementById('ghToken').value.trim();
     if (!name || !token){ toast('Enter your name and paste a token'); return; }
+    const saveBtn = document.getElementById('ghSave');
+    saveBtn.disabled = true; saveBtn.textContent = 'Checking…';
+    try{
+      const res = await fetch(`https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' },
+      });
+      if (!res.ok) throw new Error(res.status === 401 ? 'Invalid token' : `Couldn't verify the token (${res.status})`);
+      const repoData = await res.json();
+      if (!repoData.permissions || !repoData.permissions.push){
+        throw new Error(`This token doesn't have write access to ${GH_REPO_OWNER}/${GH_REPO_NAME}`);
+      }
+    }catch(err){
+      toast(err.message);
+      saveBtn.disabled = false; saveBtn.textContent = 'Save';
+      return;
+    }
     setGhEditorName(name);
     setGhToken(token);
     closeModal();
+    render();
     if (onSaved) onSaved();
   };
 }
