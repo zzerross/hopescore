@@ -614,6 +614,7 @@ function loadState(){
   return seedState();
 }
 function seedState(){
+  /* SEED_SONGS_START */
   const seedSongs = [
   {
     "title": "Holy is The Lord",
@@ -832,6 +833,7 @@ function seedState(){
     "id": "seed27"
   }
 ];
+  /* SEED_SONGS_END */
   const now = Date.now();
   for (const s of seedSongs){ s.createdAt = now; s.updatedAt = now; }
   return {
@@ -1254,7 +1256,8 @@ function renderListView(){
     <button class="iconbtn" id="btnClearSetlist" title="Clear setlist" ${STATE.setlist.length? '' : 'disabled'}>🧹</button>
     <button class="iconbtn primary" id="btnPresent" title="Present fullscreen" ${STATE.setlist.length? '' : 'disabled'}>▶</button>
     <button class="iconbtn primary" id="btnAdd" title="New song">+</button>
-    <button class="iconbtn danger" id="btnDeleteSelected" title="Delete the songs currently numbered in the setlist" ${STATE.setlist.length? '' : 'disabled'}>🗑</button>`;
+    <button class="iconbtn danger" id="btnDeleteSelected" title="Delete the songs currently numbered in the setlist" ${STATE.setlist.length? '' : 'disabled'}>🗑</button>
+    <button class="iconbtn" id="btnPublish" title="Publish the current song list to GitHub (admin)">↑</button>`;
   const setlistBtn = slot.querySelector('#btnSetlist');
   const setlistCount = slot.querySelector('#setlistCount');
   const clearSetlistBtn = slot.querySelector('#btnClearSetlist');
@@ -1310,6 +1313,7 @@ function renderListView(){
   search.addEventListener('input', ()=>paint(search.value));
 
   slot.querySelector('#btnAdd').addEventListener('click', ()=> go({view:'edit', songId:null}));
+  slot.querySelector('#btnPublish').addEventListener('click', publishToGithub);
   setlistBtn.addEventListener('click', openSetlistModal);
   clearSetlistBtn.addEventListener('click', async ()=>{
     const ok = await confirmModal('Clear setlist', 'Remove all songs from the setlist? You can add them again anytime.', 'Clear');
@@ -1766,7 +1770,109 @@ window.addEventListener('resize', ()=>{
 });
 
 /* =========================================================================
-   9. Init
+   9. GitHub publish (admin) -- lets a maintainer push the current song list
+   straight to the GitHub repo behind this deployment, from inside the app,
+   using their own personal access token stored only in this browser (never
+   sent anywhere but directly to api.github.com, never part of STATE/export).
+   ========================================================================= */
+const GH_SETTINGS_KEY = 'hopescore_gh_publish_v1';
+function getGhSettings(){
+  try{
+    const raw = localStorage.getItem(GH_SETTINGS_KEY);
+    if (raw) return JSON.parse(raw);
+  }catch(e){}
+  return null;
+}
+function setGhSettings(s){ localStorage.setItem(GH_SETTINGS_KEY, JSON.stringify(s)); }
+function clearGhSettings(){ localStorage.removeItem(GH_SETTINGS_KEY); }
+
+function utf8ToBase64(str){ return btoa(unescape(encodeURIComponent(str))); }
+function base64ToUtf8(b64){ return decodeURIComponent(escape(atob(b64.replace(/\n/g,'')))); }
+
+function openGhSettingsModal(onSaved){
+  const existing = getGhSettings() || {};
+  modalBox.style.maxWidth = '380px';
+  modalBox.innerHTML = `
+    <h3>Publish to GitHub</h3>
+    <p class="msg">Paste a personal access token with write access to this repo (Settings → Developer settings → Personal access tokens on GitHub). It's stored only in this browser.</p>
+    <input type="text" id="ghOwner" placeholder="Repo owner" value="${escapeHtml(existing.owner||'')}">
+    <input type="text" id="ghRepo" placeholder="Repo name" value="${escapeHtml(existing.repo||'')}">
+    <input type="text" id="ghBranch" placeholder="Branch" value="${escapeHtml(existing.branch||'main')}">
+    <input type="text" id="ghPath" placeholder="File path" value="${escapeHtml(existing.path||'hopescore.html')}">
+    <input type="password" id="ghToken" placeholder="Personal access token" value="${escapeHtml(existing.token||'')}">
+    <div class="modal-actions">
+      <button class="iconbtn" id="ghCancel">Cancel</button>
+      ${existing.token ? `<button class="iconbtn danger" id="ghForget">Forget token</button>` : ''}
+      <button class="iconbtn primary" id="ghSave">Save</button>
+    </div>`;
+  modalBackdrop.classList.add('open');
+  document.getElementById('ghCancel').onclick = closeModal;
+  if (existing.token){
+    document.getElementById('ghForget').onclick = ()=>{ clearGhSettings(); closeModal(); toast('Token forgotten'); };
+  }
+  document.getElementById('ghSave').onclick = ()=>{
+    const owner = document.getElementById('ghOwner').value.trim();
+    const repo = document.getElementById('ghRepo').value.trim();
+    const branch = document.getElementById('ghBranch').value.trim() || 'main';
+    const path = document.getElementById('ghPath').value.trim() || 'hopescore.html';
+    const token = document.getElementById('ghToken').value.trim();
+    if (!owner || !repo || !token){ toast('Fill in owner, repo, and token'); return; }
+    setGhSettings({owner, repo, branch, path, token});
+    closeModal();
+    if (onSaved) onSaved();
+  };
+}
+
+async function publishToGithub(){
+  const settings = getGhSettings();
+  if (!settings){ openGhSettingsModal(()=> publishToGithub()); return; }
+  const ok = await confirmModal('Publish to GitHub', `This updates ${settings.owner}/${settings.repo} (${settings.branch}) with the current song list -- live for everyone who opens the hosted site. Continue?`, 'Publish');
+  if (!ok) return;
+  toast('Publishing…');
+  try{
+    const apiBase = `https://api.github.com/repos/${settings.owner}/${settings.repo}/contents/${settings.path}`;
+    const authHeaders = { 'Authorization': `Bearer ${settings.token}`, 'Accept': 'application/vnd.github+json' };
+    const getRes = await fetch(`${apiBase}?ref=${encodeURIComponent(settings.branch)}`, { headers: authHeaders });
+    if (!getRes.ok) throw new Error(`Couldn't read the file from GitHub (${getRes.status})`);
+    const fileData = await getRes.json();
+    const currentText = base64ToUtf8(fileData.content);
+    const startMarker = '/* SEED_SONGS_START */';
+    const endMarker = '/* SEED_SONGS_END */';
+    const startIdx = currentText.indexOf(startMarker);
+    const endIdx = currentText.indexOf(endMarker);
+    if (startIdx === -1 || endIdx === -1 || endIdx < startIdx){
+      throw new Error('Could not find the song data section in the file on GitHub');
+    }
+    const songsForExport = STATE.songs.map(s=>{
+      const out = { title: s.title, keySemitone: s.keySemitone, keyIsMinor: s.keyIsMinor };
+      if (s.keyPreferFlat !== undefined) out.keyPreferFlat = s.keyPreferFlat;
+      out.description = s.description; out.body = s.body; out.id = s.id;
+      return out;
+    });
+    const newBlock = `${startMarker}\n  const seedSongs = ${JSON.stringify(songsForExport, null, 2)};\n  ${endMarker}`;
+    const newText = currentText.slice(0, startIdx) + newBlock + currentText.slice(endIdx + endMarker.length);
+    const putRes = await fetch(apiBase, {
+      method: 'PUT',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: `Update songs from HopeScore app (${STATE.songs.length} songs)`,
+        content: utf8ToBase64(newText),
+        sha: fileData.sha,
+        branch: settings.branch,
+      }),
+    });
+    if (!putRes.ok){
+      const errBody = await putRes.json().catch(()=>({}));
+      throw new Error(errBody.message || `GitHub rejected the update (${putRes.status})`);
+    }
+    toast('Published! Live in about a minute.');
+  }catch(err){
+    toast('Publish failed: ' + err.message);
+  }
+}
+
+/* =========================================================================
+   10. Init
    ========================================================================= */
 (async function init(){
   if (document.fonts && document.fonts.ready){
