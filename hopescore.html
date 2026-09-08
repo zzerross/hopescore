@@ -224,8 +224,8 @@
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     font-size:1.4em; color:#fff; background:rgba(0,0,0,.15);
   }
-  .video-size-seg{ flex:none; align-self:center; }
-  .video-size-seg button{ padding:4px 8px; font-size:11px; }
+  .video-size-seg{ flex:none; align-self:stretch; flex-direction:column; }
+  .video-size-seg button{ padding:4px 8px; font-size:11px; flex:1; }
 
   /* ---------- present (fullscreen) view ---------- */
   #present{
@@ -254,6 +254,11 @@
   .tap-zone.left .tap-chevron{ left:12px; }
   .tap-zone.right .tap-chevron{ right:12px; }
   .tap-zone:hover .tap-chevron{ opacity:1; }
+  /* Same hover-reveal idea as present mode's tap zones, but narrower --
+     this sits over live chord/lyric text (and the occasional inline link),
+     so a mouse-only sliver at each edge beats a wide swipe-sized band. */
+  .song-nav-wrap{ position:relative; }
+  .song-nav-wrap .tap-zone{ width:44px; }
 
   /* ---------- modal ---------- */
   .modal-backdrop{
@@ -1545,6 +1550,7 @@ function renderSongView(songId){
          <div class="video-embed" style="width:${videoWidth}px;"><iframe src="https://www.youtube-nocookie.com/embed/${id}" title="YouTube video" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>
          <a class="video-fallback" href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener noreferrer">Watch on YouTube ↗</a>
        </div>`;
+  const canNavigate = STATE.songs.length > 1;
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     ${showVideo ? `
@@ -1557,8 +1563,17 @@ function renderSongView(songId){
       </div>
       ${videoIds.map(videoItemHtml).join('')}
     </div>` : ''}
-    <div class="chart-card"><div class="chart mono" id="songChart"></div></div>`;
+    <div class="song-nav-wrap">
+      ${canNavigate ? `<button class="tap-zone left" id="songPrev" title="Previous song"><span class="tap-chevron">‹</span></button>` : ''}
+      ${canNavigate ? `<button class="tap-zone right" id="songNext" title="Next song"><span class="tap-chevron">›</span></button>` : ''}
+      <div class="chart-card"><div class="chart mono" id="songChart"></div></div>
+    </div>`;
   viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
+
+  if (canNavigate){
+    wrap.querySelector('#songPrev').addEventListener('click', ()=>navigateToAdjacentSong(-1));
+    wrap.querySelector('#songNext').addEventListener('click', ()=>navigateToAdjacentSong(1));
+  }
 
   if (videoIds.length){
     slot.querySelector('#videoToggleBtn').addEventListener('click', ()=>{
