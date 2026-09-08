@@ -1775,64 +1775,59 @@ window.addEventListener('resize', ()=>{
    using their own personal access token stored only in this browser (never
    sent anywhere but directly to api.github.com, never part of STATE/export).
    ========================================================================= */
-const GH_SETTINGS_KEY = 'hopescore_gh_publish_v1';
-function getGhSettings(){
-  try{
-    const raw = localStorage.getItem(GH_SETTINGS_KEY);
-    if (raw) return JSON.parse(raw);
-  }catch(e){}
-  return null;
+// This deployment always targets the same repo, so only the token (which is
+// per-person and secret) is ever asked for -- everything else is fixed here.
+const GH_REPO_OWNER = 'zzerross';
+const GH_REPO_NAME = 'hopescore';
+const GH_REPO_BRANCH = 'main';
+const GH_FILE_PATH = 'hopescore.html';
+
+const GH_TOKEN_KEY = 'hopescore_gh_token_v1';
+function getGhToken(){
+  try{ return localStorage.getItem(GH_TOKEN_KEY) || null; }catch(e){ return null; }
 }
-function setGhSettings(s){ localStorage.setItem(GH_SETTINGS_KEY, JSON.stringify(s)); }
-function clearGhSettings(){ localStorage.removeItem(GH_SETTINGS_KEY); }
+function setGhToken(t){ localStorage.setItem(GH_TOKEN_KEY, t); }
+function clearGhToken(){ localStorage.removeItem(GH_TOKEN_KEY); }
 
 function utf8ToBase64(str){ return btoa(unescape(encodeURIComponent(str))); }
 function base64ToUtf8(b64){ return decodeURIComponent(escape(atob(b64.replace(/\n/g,'')))); }
 
 function openGhSettingsModal(onSaved){
-  const existing = getGhSettings() || {};
+  const existingToken = getGhToken();
   modalBox.style.maxWidth = '380px';
   modalBox.innerHTML = `
     <h3>Publish to GitHub</h3>
-    <p class="msg">Paste a personal access token with write access to this repo (Settings → Developer settings → Personal access tokens on GitHub). It's stored only in this browser.</p>
-    <input type="text" id="ghOwner" placeholder="Repo owner" value="${escapeHtml(existing.owner||'')}">
-    <input type="text" id="ghRepo" placeholder="Repo name" value="${escapeHtml(existing.repo||'')}">
-    <input type="text" id="ghBranch" placeholder="Branch" value="${escapeHtml(existing.branch||'main')}">
-    <input type="text" id="ghPath" placeholder="File path" value="${escapeHtml(existing.path||'hopescore.html')}">
-    <input type="password" id="ghToken" placeholder="Personal access token" value="${escapeHtml(existing.token||'')}">
+    <p class="msg">Paste a personal access token with write access to ${GH_REPO_OWNER}/${GH_REPO_NAME} (Settings → Developer settings → Personal access tokens on GitHub). It's stored only in this browser.</p>
+    <input type="password" id="ghToken" placeholder="Personal access token" value="${escapeHtml(existingToken||'')}">
     <div class="modal-actions">
       <button class="iconbtn" id="ghCancel">Cancel</button>
-      ${existing.token ? `<button class="iconbtn danger" id="ghForget">Forget token</button>` : ''}
+      ${existingToken ? `<button class="iconbtn danger" id="ghForget">Forget token</button>` : ''}
       <button class="iconbtn primary" id="ghSave">Save</button>
     </div>`;
   modalBackdrop.classList.add('open');
   document.getElementById('ghCancel').onclick = closeModal;
-  if (existing.token){
-    document.getElementById('ghForget').onclick = ()=>{ clearGhSettings(); closeModal(); toast('Token forgotten'); };
+  if (existingToken){
+    document.getElementById('ghForget').onclick = ()=>{ clearGhToken(); closeModal(); toast('Token forgotten'); };
   }
   document.getElementById('ghSave').onclick = ()=>{
-    const owner = document.getElementById('ghOwner').value.trim();
-    const repo = document.getElementById('ghRepo').value.trim();
-    const branch = document.getElementById('ghBranch').value.trim() || 'main';
-    const path = document.getElementById('ghPath').value.trim() || 'hopescore.html';
     const token = document.getElementById('ghToken').value.trim();
-    if (!owner || !repo || !token){ toast('Fill in owner, repo, and token'); return; }
-    setGhSettings({owner, repo, branch, path, token});
+    if (!token){ toast('Paste a token first'); return; }
+    setGhToken(token);
     closeModal();
     if (onSaved) onSaved();
   };
 }
 
 async function publishToGithub(){
-  const settings = getGhSettings();
-  if (!settings){ openGhSettingsModal(()=> publishToGithub()); return; }
-  const ok = await confirmModal('Publish to GitHub', `This updates ${settings.owner}/${settings.repo} (${settings.branch}) with the current song list -- live for everyone who opens the hosted site. Continue?`, 'Publish');
+  const token = getGhToken();
+  if (!token){ openGhSettingsModal(()=> publishToGithub()); return; }
+  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list -- live for everyone who opens the hosted site. Continue?`, 'Publish');
   if (!ok) return;
   toast('Publishing…');
   try{
-    const apiBase = `https://api.github.com/repos/${settings.owner}/${settings.repo}/contents/${settings.path}`;
-    const authHeaders = { 'Authorization': `Bearer ${settings.token}`, 'Accept': 'application/vnd.github+json' };
-    const getRes = await fetch(`${apiBase}?ref=${encodeURIComponent(settings.branch)}`, { headers: authHeaders });
+    const apiBase = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/contents/${GH_FILE_PATH}`;
+    const authHeaders = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' };
+    const getRes = await fetch(`${apiBase}?ref=${encodeURIComponent(GH_REPO_BRANCH)}`, { headers: authHeaders });
     if (!getRes.ok) throw new Error(`Couldn't read the file from GitHub (${getRes.status})`);
     const fileData = await getRes.json();
     const currentText = base64ToUtf8(fileData.content);
@@ -1858,7 +1853,7 @@ async function publishToGithub(){
         message: `Update songs from HopeScore app (${STATE.songs.length} songs)`,
         content: utf8ToBase64(newText),
         sha: fileData.sha,
-        branch: settings.branch,
+        branch: GH_REPO_BRANCH,
       }),
     });
     if (!putRes.ok){
