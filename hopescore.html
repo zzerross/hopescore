@@ -406,24 +406,33 @@ function lineIsChordLine(line){
 // Recognizes common part/section names on their own line -- "Verse 1",
 // "[Chorus]", "Pre-Chorus:", "Bridge x2" -- with no special markup needed.
 // A leading "##" still works too, for a custom name outside this vocabulary.
-const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)\s*([0-9]*)\s*(x)?\s*:?\s*\]?$/i;
+const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)\s*(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\s*:?\s*\]?$/i;
 function detectSectionLabel(trimmed){
   const m = trimmed.match(SECTION_WORD_RE);
   if (!m) return null;
   const word = /pre-?chorus/i.test(m[1]) ? 'Pre-Chorus' : m[1][0].toUpperCase()+m[1].slice(1).toLowerCase();
-  const num = m[2] || '', x = m[3] || '';
-  if (num) return `${word} ${num}${x}`;
-  if (x) return `${word} ${x}`;
-  return word;
+  // repeat count can be written as "2x" (number first) or "x2" (x first, e.g. "Bridge x2")
+  let suffix = '';
+  if (m[2]) suffix = m[2] + (m[3]?'x':'');
+  else if (m[4]) suffix = 'x' + (m[5]||'');
+  return suffix ? `${word} ${suffix}` : word;
 }
-function parseBody(bodyText){
+function parseBody(bodyText, collapseBlanks){
+  if (collapseBlanks === undefined) collapseBlanks = true;
   const rawLines = (bodyText||'').replace(/\r\n/g,'\n').split('\n');
   const blocks = [];
   let i = 0;
   while (i < rawLines.length){
     const line = rawLines[i];
     const trimmed = line.trim();
-    if (trimmed === ''){ blocks.push({type:'blank'}); i++; continue; }
+    if (trimmed === ''){
+      blocks.push({type:'blank'});
+      i++;
+      if (collapseBlanks){
+        while (i < rawLines.length && rawLines[i].trim() === '') i++;
+      }
+      continue;
+    }
     if (trimmed.startsWith('##')){
       blocks.push({type:'section', text: trimmed.replace(/^##\s*/, '')});
       i++; continue;
@@ -767,6 +776,13 @@ function setFontSize(px){
   STATE.settings.fontSize = Math.max(8, Math.min(32, px));
   saveState();
 }
+// Whether 2+ consecutive blank lines collapse into one gap. On by default;
+// a device-wide setting, same as font size.
+function getCollapseBlanks(){ return STATE.settings.collapseBlanks !== false; }
+function setCollapseBlanks(v){
+  STATE.settings.collapseBlanks = !!v;
+  saveState();
+}
 
 /* =========================================================================
    5. Small UI helpers: modal, toast, view router
@@ -807,7 +823,7 @@ function escapeHtml(s){
    6. Chart renderer (shared by song view + present view)
    ========================================================================= */
 function computeSongRows(song, mode, targetVal){
-  const blocks = parseBody(song.body);
+  const blocks = parseBody(song.body, getCollapseBlanks());
   const [targetSemitone] = (targetVal||'0:0').split(':').map(Number);
   const transform = makeTransform(mode, song.keySemitone, targetSemitone);
   const rendered = renderBlocks(blocks, transform);
@@ -1323,6 +1339,10 @@ function renderSongView(songId){
       <span class="font-size-label" id="fontSizeLabel">${getFontSize()}px</span>
       <button id="fontInc" title="Larger">A+</button>
     </div>
+    <div class="seg" id="blankSeg" title="Multiple consecutive blank lines in the source text">
+      <button data-blank="1" class="${getCollapseBlanks()?'active':''}" title="Merge multiple blank lines into a single gap">Merge</button>
+      <button data-blank="0" class="${!getCollapseBlanks()?'active':''}" title="Keep every blank line as its own gap">Keep</button>
+    </div>
     <button class="iconbtn primary" id="presentOne" title="Present fullscreen">▶</button>
     <button class="iconbtn" id="editSongBtn" title="Edit song">✎</button>`;
 
@@ -1422,6 +1442,12 @@ function renderSongView(songId){
   document.getElementById('fontInc').addEventListener('click', ()=>{
     setFontSize(getFontSize()+1);
     document.getElementById('fontSizeLabel').textContent = getFontSize()+'px';
+    repaint();
+  });
+  document.getElementById('blankSeg').addEventListener('click', (e)=>{
+    const btn = e.target.closest('button[data-blank]'); if (!btn) return;
+    setCollapseBlanks(btn.dataset.blank === '1');
+    document.querySelectorAll('#blankSeg button').forEach(b=>b.classList.toggle('active', b===btn));
     repaint();
   });
 }
