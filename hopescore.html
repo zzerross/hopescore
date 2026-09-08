@@ -1909,6 +1909,12 @@ async function publishToGithub(){
     document.fonts.ready.then(()=>{ if (route.view==='song') renderSongView(route.songId); if (presentEl.classList.contains('open')) paintPresent(); });
   }
   render();
+  // Offline support: only meaningful (and only registrable) when actually
+  // hosted over https, e.g. GitHub Pages -- silently does nothing for a
+  // locally-opened file (file:/content:), which can't run service workers.
+  if ('serviceWorker' in navigator && location.protocol === 'https:'){
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  }
 })();
 </script>
 
