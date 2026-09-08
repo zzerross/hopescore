@@ -325,14 +325,33 @@ const QUAL_STRICT_RE = /^[0-9]*(?:(?:maj|min|dim|aug|sus|add|m|b5|#5|b9|#9|b13|#
 // gets transposed/converted, instead of falling through to plain lyric text.
 const SPECIAL_TOKENS = new Set(['N.C.','NC','%','/','-','|','||','|:',':|','||:',':||']);
 const REPEAT_COUNT_RE = /^x[0-9]+$/i;
-function isChordToken(text){
+function baseChordToken(text){
   const m = text.match(CHORD_RE);
-  if (m && QUAL_STRICT_RE.test(m[3])) return true;
+  return !!(m && QUAL_STRICT_RE.test(m[3]));
+}
+// Some charts write a chord held for several beats/bars as the chord typed
+// back-to-back with no separator ("DDDD" for "D D D D") instead of spacing
+// or a bar-notation repeat count. Detect that so it's still recognized (and
+// transposed as a unit) rather than falling through to plain lyric text.
+function repeatedChordUnit(text){
+  for (let len=1; len<text.length; len++){
+    if (text.length % len !== 0) continue;
+    const unit = text.slice(0, len);
+    if (unit.repeat(text.length/len) !== text) continue;
+    if (baseChordToken(unit)) return {unit, count: text.length/len};
+  }
+  return null;
+}
+function isChordToken(text){
+  if (baseChordToken(text)) return true;
   if (SPECIAL_TOKENS.has(text)) return true;
-  return REPEAT_COUNT_RE.test(text);
+  if (REPEAT_COUNT_RE.test(text)) return true;
+  return !!repeatedChordUnit(text);
 }
 
 function transposeChord(text, shift, preferFlat){
+  const rep = repeatedChordUnit(text);
+  if (rep) return transposeChord(rep.unit, shift, preferFlat).repeat(rep.count);
   const m = text.match(CHORD_RE);
   if (!m) return text;
   const [, root, acc, qual, bassRoot, bassAcc] = m;
@@ -342,6 +361,8 @@ function transposeChord(text, shift, preferFlat){
 }
 const NNS_TABLE = ['1','b2','2','b3','3','4','#4','5','b6','6','b7','7'];
 function toNashville(text, baseSemitone){
+  const rep = repeatedChordUnit(text);
+  if (rep) return toNashville(rep.unit, baseSemitone).repeat(rep.count);
   const m = text.match(CHORD_RE);
   if (!m) return text;
   const [, root, acc, qual, bassRoot, bassAcc] = m;
