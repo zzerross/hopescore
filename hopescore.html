@@ -319,11 +319,17 @@ function keyPreference(semitone){ return MAJOR_PREF_BY_SEMITONE[((semitone%12)+1
 
 const CHORD_RE = /^([A-G])([#b]?)([A-Za-z0-9#+]*)(?:\/([A-G])([#b]?))?$/;
 const QUAL_STRICT_RE = /^[0-9]*(?:(?:maj|min|dim|aug|sus|add|m|b5|#5|b9|#9|b13|#11)[0-9]*)*$/i;
-const SPECIAL_TOKENS = new Set(['N.C.','NC','%','/','-']);
+// Bar-notation progressions (e.g. "G | Am7 | C | G || x2") mix chords with
+// bar lines, repeat markers and a trailing repeat count -- all of these need
+// to be accepted as part of a chord line so the whole line (and its chords)
+// gets transposed/converted, instead of falling through to plain lyric text.
+const SPECIAL_TOKENS = new Set(['N.C.','NC','%','/','-','|','||','|:',':|','||:',':||']);
+const REPEAT_COUNT_RE = /^x[0-9]+$/i;
 function isChordToken(text){
   const m = text.match(CHORD_RE);
   if (m && QUAL_STRICT_RE.test(m[3])) return true;
-  return SPECIAL_TOKENS.has(text);
+  if (SPECIAL_TOKENS.has(text)) return true;
+  return REPEAT_COUNT_RE.test(text);
 }
 
 function transposeChord(text, shift, preferFlat){
