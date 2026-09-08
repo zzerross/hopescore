@@ -218,6 +218,12 @@
   .video-embed{ position:relative; flex:none; width:180px; aspect-ratio:16/9; border-radius:8px; overflow:hidden; background:#000; }
   .video-embed iframe{ position:absolute; inset:0; width:100%; height:100%; border:0; }
   .video-fallback{ font-size:10.5px; color:var(--accent); text-decoration:none; }
+  .video-thumb{ position:relative; flex:none; aspect-ratio:16/9; border-radius:8px; overflow:hidden; background:#000; display:block; }
+  .video-thumb img{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .video-thumb .play-badge{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:1.4em; color:#fff; background:rgba(0,0,0,.15);
+  }
   .video-size-seg{ flex:none; align-self:center; }
   .video-size-seg button{ padding:4px 8px; font-size:11px; }
 
@@ -1519,23 +1525,37 @@ function renderSongView(songId){
 
   const showVideo = videoIds.length && getYoutubeEnabled();
   const videoWidth = VIDEO_SIZES[getVideoSize()];
-  // Opening the file via a content:// URI (common when a file-manager app's
-  // "open with browser" hands the page to Chrome, instead of a plain file://
-  // open) strips the HTTP Referer header YouTube's embedded player checks,
-  // which surfaces as "Error 153" inside the player -- something no page
-  // content can fix, so warn plainly and give a one-tap way around it.
-  const isContentUri = location.protocol === 'content:';
+  // A live iframe embed needs YouTube to see a real HTTP(S) Referer header.
+  // A content:// URI -- what you get when a file manager's "open with
+  // browser" hands the page to Chrome, instead of a plain file:// open --
+  // has no such header to give, and no iframe attribute, meta tag, or
+  // embed-URL variant (youtube-nocookie.com included) can manufacture one
+  // that isn't there; that part of the earlier fix only helps browsers that
+  // *do* send a referer but were having it stripped by policy. So on a
+  // content:// origin specifically, skip the iframe and show a tap-to-watch
+  // thumbnail instead, which needs no embed authorization and always works.
+  // file:// is left on the live embed since it isn't the reported failure.
+  const isLocalOrigin = location.protocol === 'content:';
+  const videoItemHtml = (id) => isLocalOrigin
+    ? `<a class="video-thumb" href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener noreferrer" style="width:${videoWidth}px;" title="Watch on YouTube">
+         <img src="https://img.youtube.com/vi/${id}/mqdefault.jpg" alt="YouTube video thumbnail">
+         <span class="play-badge">▶</span>
+       </a>`
+    : `<div class="video-item">
+         <div class="video-embed" style="width:${videoWidth}px;"><iframe src="https://www.youtube-nocookie.com/embed/${id}" title="YouTube video" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>
+         <a class="video-fallback" href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener noreferrer">Watch on YouTube ↗</a>
+       </div>`;
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     ${showVideo ? `
     <div class="video-row" id="videoRow">
-      ${isContentUri ? `<div class="video-warning">Videos may fail to play when this file is opened this way (via a file manager's "open"). If a video shows an error, use the YouTube link below it, or open this file directly in Chrome instead.</div>` : ''}
+      ${isLocalOrigin ? `<div class="video-warning">Opened via a file manager, so videos play by tapping through to YouTube rather than inline. Opening this file directly in Chrome (not through another app) usually enables inline playback instead.</div>` : ''}
       <div class="seg video-size-seg" id="videoSizeSeg" title="Player size -- remembered on this device">
         <button data-size="small" class="${getVideoSize()==='small'?'active':''}">S</button>
         <button data-size="medium" class="${getVideoSize()==='medium'?'active':''}">M</button>
         <button data-size="large" class="${getVideoSize()==='large'?'active':''}">L</button>
       </div>
-      ${videoIds.map(id=>`<div class="video-item"><div class="video-embed" style="width:${videoWidth}px;"><iframe src="https://www.youtube-nocookie.com/embed/${id}" title="YouTube video" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div><a class="video-fallback" href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener noreferrer">Watch on YouTube ↗</a></div>`).join('')}
+      ${videoIds.map(videoItemHtml).join('')}
     </div>` : ''}
     <div class="chart-card"><div class="chart mono" id="songChart"></div></div>`;
   viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
