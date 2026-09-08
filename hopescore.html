@@ -649,14 +649,35 @@ function songsSignature(songs){
       .sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
   );
 }
-// Once a publish succeeds this session, that becomes the "known published"
-// baseline immediately -- otherwise hasUnpublishedChanges() would keep
-// comparing against the stale seedSongs this page happened to load with,
-// and the banner would wrongly stay up right after a successful publish.
-let lastKnownPublishedSongsSig = null;
+// Once a publish succeeds, that becomes the "known published" baseline
+// immediately -- otherwise hasUnpublishedChanges() would keep comparing
+// against whatever seedSongs this page happened to load with. That matters
+// across a reload too, not just within the session: GitHub Pages can take
+// up to a minute or so to actually redeploy, so a refresh right after
+// publishing can easily still fetch the pre-publish file, which would make
+// a genuinely-published change look unpublished again. Persisted (not just
+// an in-memory variable) so it survives exactly that refresh.
+const GH_LAST_PUBLISHED_SIG_KEY = 'hopescore_gh_last_published_sig_v1';
+// Trusted for a few minutes only -- long enough to cover GitHub Pages'
+// deploy lag, short enough that once it expires a real staleness (say,
+// another editor publishing in the meantime) gets caught again by
+// comparing against whatever seedSongs the page actually fetched.
+const GH_LAST_PUBLISHED_TRUST_MS = 5 * 60 * 1000;
+function getLastPublishedSig(){
+  try{
+    const raw = localStorage.getItem(GH_LAST_PUBLISHED_SIG_KEY);
+    if (!raw) return null;
+    const { sig, ts } = JSON.parse(raw);
+    if (Date.now() - ts > GH_LAST_PUBLISHED_TRUST_MS) return null;
+    return sig;
+  }catch(e){ return null; }
+}
+function setLastPublishedSig(sig){
+  localStorage.setItem(GH_LAST_PUBLISHED_SIG_KEY, JSON.stringify({ sig, ts: Date.now() }));
+}
 function hasUnpublishedChanges(){
   if (!isEditorLoggedIn()) return false;
-  const baseline = lastKnownPublishedSongsSig || songsSignature(seedState().songs);
+  const baseline = getLastPublishedSig() || songsSignature(seedState().songs);
   return songsSignature(STATE.songs) !== baseline;
 }
 
@@ -1997,7 +2018,7 @@ async function publishToGithub(){
       const errBody = await putRes.json().catch(()=>({}));
       throw new Error(errBody.message || `GitHub rejected the update (${putRes.status})`);
     }
-    lastKnownPublishedSongsSig = songsSignature(STATE.songs);
+    setLastPublishedSig(songsSignature(STATE.songs));
     toast('Published! Live in about a minute.');
     if (route.view === 'list') renderListView();
   }catch(err){

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hopescore-v1';
+const CACHE_NAME = 'hopescore-v2';
 const CACHED_URLS = ['./', './index.html', './hopescore.html'];
 
 self.addEventListener('install', (event) => {
@@ -26,8 +26,13 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
 
+  // 'reload' forces the browser's own HTTP cache to be bypassed too -- since
+  // GitHub Pages serves this with caching headers, a plain fetch() could be
+  // satisfied straight from the HTTP cache without this actually reaching
+  // the network, defeating "network-first" in a way this SW's own cache
+  // logic below can't detect or fix.
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: 'reload' })
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
