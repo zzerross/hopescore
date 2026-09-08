@@ -606,10 +606,41 @@ function renderBlocks(blocks, transformFn){
 const STORE_KEY = 'hopescore_v1';
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 
+// Declared up here (ahead of loadState(), which reads getGhToken() on every
+// load) rather than down by the rest of the GitHub-publish code, so there's
+// no temporal-dead-zone trap: a `const` used before its own declaration line
+// has run throws, and loadState()'s try/catch would silently swallow that
+// and mask it as "no token" every time. The token is shared across editors
+// (simplest setup for people without their own GitHub account), so it alone
+// can't say who made a change -- the editor's name is asked for separately
+// and stamped on the commit itself (message + git author).
+const GH_TOKEN_KEY = 'hopescore_gh_token_v1';
+const GH_NAME_KEY = 'hopescore_gh_editor_name_v1';
+function getGhToken(){
+  try{ return localStorage.getItem(GH_TOKEN_KEY) || null; }catch(e){ return null; }
+}
+function setGhToken(t){ localStorage.setItem(GH_TOKEN_KEY, t); }
+function clearGhToken(){ localStorage.removeItem(GH_TOKEN_KEY); }
+function getGhEditorName(){
+  try{ return localStorage.getItem(GH_NAME_KEY) || null; }catch(e){ return null; }
+}
+function setGhEditorName(n){ localStorage.setItem(GH_NAME_KEY, n); }
+
 function loadState(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw){
+      const saved = JSON.parse(raw);
+      // An editor (this device has a publish token configured) keeps their
+      // own local song edits across reloads, so a draft survives until they
+      // hit Publish. Everyone else always sees this load's song list -- the
+      // latest published version when online, or the last-cached one when
+      // offline (the service worker's network-first strategy already
+      // handles that at the file level) -- only their setlist and device
+      // settings stay personal/local.
+      if (getGhToken()) return saved;
+      return { songs: seedState().songs, setlist: saved.setlist || [], settings: saved.settings || {} };
+    }
   }catch(e){}
   return seedState();
 }
@@ -1790,22 +1821,6 @@ const GH_REPO_OWNER = 'zzerross';
 const GH_REPO_NAME = 'hopescore';
 const GH_REPO_BRANCH = 'main';
 const GH_FILE_PATH = 'hopescore.html';
-
-// The token is shared across editors (simplest setup for people without
-// their own GitHub account), so it alone can't say who made a change --
-// the editor's name is asked for separately and stamped on the commit
-// itself (message + git author) so the history still shows who did what.
-const GH_TOKEN_KEY = 'hopescore_gh_token_v1';
-const GH_NAME_KEY = 'hopescore_gh_editor_name_v1';
-function getGhToken(){
-  try{ return localStorage.getItem(GH_TOKEN_KEY) || null; }catch(e){ return null; }
-}
-function setGhToken(t){ localStorage.setItem(GH_TOKEN_KEY, t); }
-function clearGhToken(){ localStorage.removeItem(GH_TOKEN_KEY); }
-function getGhEditorName(){
-  try{ return localStorage.getItem(GH_NAME_KEY) || null; }catch(e){ return null; }
-}
-function setGhEditorName(n){ localStorage.setItem(GH_NAME_KEY, n); }
 
 function utf8ToBase64(str){ return btoa(unescape(encodeURIComponent(str))); }
 function base64ToUtf8(b64){ return decodeURIComponent(escape(atob(b64.replace(/\n/g,'')))); }
