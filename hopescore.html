@@ -657,28 +657,45 @@ function songsSignature(songs){
 // publishing can easily still fetch the pre-publish file, which would make
 // a genuinely-published change look unpublished again. Persisted (not just
 // an in-memory variable) so it survives exactly that refresh.
-const GH_LAST_PUBLISHED_SIG_KEY = 'hopescore_gh_last_published_sig_v1';
+const GH_LAST_PUBLISHED_KEY = 'hopescore_gh_last_published_sig_v1';
 // Trusted for a few minutes only -- long enough to cover GitHub Pages'
 // deploy lag, short enough that once it expires a real staleness (say,
 // another editor publishing in the meantime) gets caught again by
 // comparing against whatever seedSongs the page actually fetched.
 const GH_LAST_PUBLISHED_TRUST_MS = 5 * 60 * 1000;
-function getLastPublishedSig(){
+// The full song list (not just a signature) is kept so pendingChangeCounts()
+// can diff by id, not just say "something changed".
+function getLastPublishedSongs(){
   try{
-    const raw = localStorage.getItem(GH_LAST_PUBLISHED_SIG_KEY);
+    const raw = localStorage.getItem(GH_LAST_PUBLISHED_KEY);
     if (!raw) return null;
-    const { sig, ts } = JSON.parse(raw);
+    const { songs, ts } = JSON.parse(raw);
     if (Date.now() - ts > GH_LAST_PUBLISHED_TRUST_MS) return null;
-    return sig;
+    return songs;
   }catch(e){ return null; }
 }
-function setLastPublishedSig(sig){
-  localStorage.setItem(GH_LAST_PUBLISHED_SIG_KEY, JSON.stringify({ sig, ts: Date.now() }));
+function setLastPublishedSongs(songs){
+  localStorage.setItem(GH_LAST_PUBLISHED_KEY, JSON.stringify({ songs, ts: Date.now() }));
+}
+function publishedBaselineSongs(){
+  return getLastPublishedSongs() || seedState().songs;
 }
 function hasUnpublishedChanges(){
   if (!isEditorLoggedIn()) return false;
-  const baseline = getLastPublishedSig() || songsSignature(seedState().songs);
-  return songsSignature(STATE.songs) !== baseline;
+  return songsSignature(STATE.songs) !== songsSignature(publishedBaselineSongs());
+}
+// Counts songs added/deleted locally (by id) since the published baseline,
+// for the +/🗑 button badges -- an in-place edit to an existing song shows
+// up in hasUnpublishedChanges() but isn't counted as either here.
+function pendingChangeCounts(){
+  if (!isEditorLoggedIn()) return { added: 0, deleted: 0 };
+  const baseline = publishedBaselineSongs();
+  const baselineIds = new Set(baseline.map(s => s.id));
+  const localIds = new Set(STATE.songs.map(s => s.id));
+  return {
+    added: STATE.songs.filter(s => !baselineIds.has(s.id)).length,
+    deleted: baseline.filter(s => !localIds.has(s.id)).length,
+  };
 }
 
 function loadState(){
@@ -1343,14 +1360,15 @@ function renderListView(){
   const wrap = document.createElement('div');
 
   const editor = isEditorLoggedIn();
+  const pending = editor ? pendingChangeCounts() : { added: 0, deleted: 0 };
   const slot = document.getElementById('topbarListActions');
   slot.innerHTML = `
     <button class="iconbtn" id="btnSetlist" title="Edit setlist">🎵<span class="btn-badge" id="setlistCount">${STATE.setlist.length}</span></button>
     <button class="iconbtn" id="btnClearSetlist" title="Clear setlist" ${STATE.setlist.length? '' : 'disabled'}>🧹</button>
     <button class="iconbtn primary" id="btnPresent" title="Present fullscreen" ${STATE.setlist.length? '' : 'disabled'}>▶</button>
     ${editor ? `
-    <button class="iconbtn primary" id="btnAdd" title="New song">+</button>
-    <button class="iconbtn danger" id="btnDeleteSelected" title="Delete the songs currently numbered in the setlist" ${STATE.setlist.length? '' : 'disabled'}>🗑</button>
+    <button class="iconbtn primary" id="btnAdd" title="New song${pending.added? ` -- ${pending.added} added locally, not yet published`:''}">+${pending.added? `<span class="btn-badge">${pending.added}</span>` : ''}</button>
+    <button class="iconbtn danger" id="btnDeleteSelected" title="Delete the songs currently numbered in the setlist${pending.deleted? ` (${pending.deleted} deleted locally, not yet published)`:''}" ${STATE.setlist.length? '' : 'disabled'}>🗑${pending.deleted? `<span class="btn-badge">${pending.deleted}</span>` : ''}</button>
     <button class="iconbtn" id="btnPublish" title="Publish the current song list to GitHub">↑</button>
     <button class="iconbtn" id="btnGhLogout" title="Log out (${escapeHtml(getGhEditorName()||'')})">🔓</button>
     ` : `
@@ -2018,7 +2036,7 @@ async function publishToGithub(){
       const errBody = await putRes.json().catch(()=>({}));
       throw new Error(errBody.message || `GitHub rejected the update (${putRes.status})`);
     }
-    setLastPublishedSig(songsSignature(STATE.songs));
+    setLastPublishedSongs(STATE.songs);
     toast('Published! Live in about a minute.');
     if (route.view === 'list') renderListView();
   }catch(err){
