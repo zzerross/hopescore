@@ -169,17 +169,27 @@
     background:var(--surface); border:1px solid var(--paper-line); color:var(--muted);
   }
 
-  /* ---------- home (weekly setlist) view ---------- */
-  .setlist-datebar{ display:flex; align-items:center; justify-content:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
-  .setlist-dateheading{ font-family:'Fraunces'; font-weight:700; font-size:22px; min-width:120px; text-align:center; }
-  .date-input{
-    height:34px; padding:0 8px; border-radius:8px; border:1px solid var(--paper-line);
-    background:var(--surface); color:var(--ink); font-size:13px;
+  /* ---------- home (weekly setlist + library, one page) view ---------- */
+  .date-select{
+    height:36px; padding:0 8px; border-radius:8px; border:1px solid var(--paper-line);
+    background:var(--surface); color:var(--ink); font-size:13px; font-weight:600; max-width:150px;
   }
   .setlist-row{ grid-template-columns:30px 1fr auto; }
+  .setlist-row.editable{ grid-template-columns:30px 1fr auto auto; }
   .setlist-row .pill{ flex-shrink:0; }
-  /* Library rows have no per-row badge (setlist membership is now managed
-     from the home view, not per-song here), so they only need one column. */
+  .row-controls{ display:flex; gap:4px; }
+  .row-controls button{
+    width:26px; height:26px; border-radius:6px; border:1px solid var(--paper-line);
+    background:var(--surface); color:var(--ink); font-size:12px; cursor:pointer;
+  }
+  .row-controls button:hover{ border-color:var(--focus); }
+  .row-controls button:disabled{ opacity:.35; cursor:not-allowed; }
+  .section-divider{
+    font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.06em;
+    margin:28px 0 10px; padding-top:14px; border-top:1px solid var(--paper-line);
+  }
+  /* Library rows have no per-row badge for a non-editor (setlist membership
+     can't be changed without logging in), so they only need one column. */
   .song-row.simple{ grid-template-columns:1fr; }
 
   /* ---------- editor view ---------- */
@@ -300,7 +310,6 @@
   <div class="topbar" id="topbar">
     <div class="topbar-scroll" id="topbarScroll">
       <div class="topbar-listactions" id="topbarHomeActions" hidden></div>
-      <div class="topbar-listactions" id="topbarListActions" hidden></div>
       <div class="topbar-listactions" id="topbarSongActions" hidden></div>
       <div class="topbar-listactions" id="topbarEditActions" hidden></div>
     </div>
@@ -506,10 +515,19 @@ function addWeeksISO(iso, weeks){
   d.setDate(d.getDate() + weeks*7);
   return toISODate(d);
 }
-const KOREAN_WEEKDAYS = ['일','월','화','수','목','금','토'];
 function formatDateHeading(iso){
-  const d = isoDateParts(iso);
-  return `${d.getMonth()+1}/${d.getDate()} (${KOREAN_WEEKDAYS[d.getDay()]})`;
+  return isoDateParts(iso).toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
+}
+// The date dropdown's option list: a rolling window around "this week" (a
+// month back, two months ahead covers most planning-ahead and looking-back
+// use) plus whatever date is actually selected, in case it falls outside
+// that window (an old or far-future setlist someone linked directly to).
+function dateSelectOptions(selectedDate){
+  const base = nearestSundayISO();
+  const dates = new Set();
+  for (let w=-4; w<=8; w++) dates.add(addWeeksISO(base, w));
+  dates.add(selectedDate);
+  return Array.from(dates).sort();
 }
 // Splits a title like "We Fall Down by Chris Tomlin" into the song name and
 // the attribution, so lists can show just the name and the song page can
@@ -1426,8 +1444,9 @@ function layoutChart(container, rows, columns, boxWidth, boxHeight, opts){
 const viewRoot = document.getElementById('viewRoot');
 // 'home' (this week's dated setlist) is the default landing view -- see
 // scenario in the "weekly setlist" feature: most opens, including during
-// the service itself, want today's/this week's setlist front and center,
-// with the full song library one tap away rather than the default.
+// the service itself, want today's/this week's setlist front and center.
+// The full song library lives further down the same page (see
+// renderHomeView()) rather than behind a separate view/tab.
 let route = {view:'home', date: nearestSundayISO()};
 let activeSongRepaint = null;
 
@@ -1438,36 +1457,31 @@ function render(){
   // but route state could in principle point here some other way (e.g. a
   // stale reference after logging out) -- bounce back rather than expose it.
   if (route.view==='edit' && !isEditorLoggedIn()){
-    route = { view: route.songId ? 'song' : 'list', songId: route.songId };
+    route = { view: 'home', date: route.date || nearestSundayISO() };
   }
   renderTopbar();
   viewRoot.classList.toggle('song-view', route.view==='song');
   if (route.view==='home') renderHomeView(route.date || nearestSundayISO());
-  else if (route.view==='list') renderListView();
   else if (route.view==='edit') renderEditView(route.songId||null);
   else if (route.view==='song') renderSongView(route.songId);
 }
 
 function renderTopbar(){
   const homeSlot = document.getElementById('topbarHomeActions');
-  const listSlot = document.getElementById('topbarListActions');
   const songSlot = document.getElementById('topbarSongActions');
   const editSlot = document.getElementById('topbarEditActions');
 
   homeSlot.hidden = route.view !== 'home';
   if (route.view !== 'home') homeSlot.innerHTML = '';
-  listSlot.hidden = route.view !== 'list';
-  if (route.view !== 'list') listSlot.innerHTML = '';
   songSlot.hidden = route.view !== 'song';
   if (route.view !== 'song') songSlot.innerHTML = '';
   editSlot.hidden = route.view !== 'edit';
   if (route.view !== 'edit') editSlot.innerHTML = '';
-  // home/list/song/edit slots are populated by renderHomeView()/renderListView()/renderSongView()/renderEditView(), which run right after this
+  // home/song/edit slots are populated by renderHomeView()/renderSongView()/renderEditView(), which run right after this
 }
 
-/* ---- list view ---- */
-// Shared by the home (setlist) and library views -- an editor with any
-// unpublished song or setlist change sees this, wherever they are.
+// An editor with any unpublished song or setlist change sees this at the
+// top of the home page.
 function renderUnpubBanner(){
   if (!isEditorLoggedIn() || !hasUnpublishedChanges()) return null;
   const banner = document.createElement('div');
@@ -1490,63 +1504,151 @@ function renderUnpubBanner(){
   return banner;
 }
 
-/* ---- home view (this week's -- or any date's -- setlist) ---- */
+/* ---- home view: this week's (or any date's) setlist, plus the full
+   library beneath it, as one scrollable page -- no separate "library"
+   view/tab, and no modal for editing the setlist. Editors add/remove/
+   reorder inline; everyone else just browses. ---- */
 function renderHomeView(date){
   const wrap = document.createElement('div');
   const editor = isEditorLoggedIn();
-  const ids = STATE.setlists[date] || [];
-  const songs = ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
+  const pending = editor ? pendingChangeCounts() : { added: 0, deleted: 0 };
 
   const slot = document.getElementById('topbarHomeActions');
   slot.innerHTML = `
-    <button class="iconbtn primary" id="btnPresentHome" title="Present fullscreen" ${songs.length? '' : 'disabled'}>▶</button>
-    <button class="iconbtn" id="btnCopySetlist" title="Copy setlist as text" ${songs.length? '' : 'disabled'}>⎘</button>
-    ${editor ? `<button class="iconbtn" id="btnEditSetlist" title="Add / remove / reorder songs">✎</button>` : ''}
-    <button class="iconbtn" id="btnLibrary" title="Song library">🎼</button>
+    <button class="iconbtn" id="datePrev" title="Previous week">‹</button>
+    <select id="dateSelect" class="date-select" title="Pick a date">
+      ${dateSelectOptions(date).map(d=>`<option value="${d}" ${d===date?'selected':''}>${escapeHtml(formatDateHeading(d))}</option>`).join('')}
+      <option value="__custom__">Other date…</option>
+    </select>
+    <button class="iconbtn" id="dateNext" title="Next week">›</button>
+    <input type="date" id="datePicker" value="${date}" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none;">
+    <div class="topbar-divider"></div>
+    <button class="iconbtn primary" id="btnPresentHome" title="Present fullscreen">▶</button>
+    <button class="iconbtn" id="btnCopySetlist" title="Copy setlist as text">📋</button>
     ${editor ? `
-    <button class="iconbtn" id="btnPublish" title="Publish the current song list and setlist to GitHub">↑</button>
+    <button class="iconbtn primary" id="btnAdd" title="New song${pending.added? ` -- ${pending.added} added locally, not yet published`:''}">+${pending.added? `<span class="btn-badge">${pending.added}</span>` : ''}</button>
+    <button class="iconbtn" id="btnPublish" title="Publish the current song list and setlist to GitHub">📤</button>
     <button class="iconbtn" id="btnGhLogout" title="Log out (${escapeHtml(getGhEditorName()||'')})">🔓</button>
     ` : `
-    <button class="iconbtn" id="btnEditorLogin" title="Log in as editor to manage the setlist">🔑</button>
+    <button class="iconbtn" id="btnEditorLogin" title="Log in as editor to manage songs and the setlist">🔑</button>
     `}`;
 
   const banner = renderUnpubBanner();
   if (banner) wrap.appendChild(banner);
 
-  const datebar = document.createElement('div');
-  datebar.className = 'setlist-datebar';
-  datebar.innerHTML = `
-    <button class="iconbtn" id="datePrev" title="Previous week">‹</button>
-    <div class="setlist-dateheading">${escapeHtml(formatDateHeading(date))}</div>
-    <button class="iconbtn" id="dateNext" title="Next week">›</button>
-    <input type="date" id="datePicker" class="date-input" value="${date}" title="Pick a different date">
-    ${date !== nearestSundayISO() ? `<button class="pill" id="dateThisWeek" style="cursor:pointer;border:none;">This week</button>` : ''}
-  `;
-  wrap.appendChild(datebar);
+  const setlistEl = document.createElement('div');
+  setlistEl.className = 'song-list';
+  wrap.appendChild(setlistEl);
 
-  const listEl = document.createElement('div');
-  listEl.className = 'song-list';
-  if (songs.length===0){
-    listEl.innerHTML = `<div class="empty-state">${editor ? 'No songs in this setlist yet. Tap "✎" to add some.' : 'No setlist for this date yet.'}</div>`;
-  } else {
+  const divider = document.createElement('div');
+  divider.className = 'section-divider';
+  divider.textContent = 'All songs';
+  wrap.appendChild(divider);
+
+  const search = document.createElement('input');
+  search.className = 'search'; search.placeholder = 'Search song titles…'; search.id = 'searchInput';
+  wrap.appendChild(search);
+
+  const libraryEl = document.createElement('div');
+  libraryEl.className = 'song-list';
+  wrap.appendChild(libraryEl);
+
+  const btnPresentHome = slot.querySelector('#btnPresentHome');
+  const btnCopySetlist = slot.querySelector('#btnCopySetlist');
+
+  function paintSetlist(){
+    const ids = STATE.setlists[date] || [];
+    const songs = ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
+    btnPresentHome.disabled = songs.length===0;
+    btnCopySetlist.disabled = songs.length===0;
+    setlistEl.innerHTML = '';
+    if (songs.length===0){
+      setlistEl.innerHTML = `<div class="empty-state">${editor ? 'No songs in this setlist yet -- add some from the list below.' : 'No setlist for this date yet.'}</div>`;
+      return;
+    }
     songs.forEach((s,i)=>{
       const row = document.createElement('div');
-      row.className = 'song-row setlist-row';
+      row.className = editor ? 'song-row setlist-row editable' : 'song-row setlist-row';
       row.innerHTML = `
         <span class="song-badge assigned">${i+1}</span>
         <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>
-        <span class="pill">${escapeHtml(songKeyLabel(s))}</span>`;
-      row.addEventListener('click', ()=> go({view:'song', songId:s.id, back:'home', date}));
-      listEl.appendChild(row);
+        <span class="pill">${escapeHtml(songKeyLabel(s))}</span>
+        ${editor ? `<div class="row-controls">
+          <button data-act="up" ${i===0?'disabled':''} title="Move up">↑</button>
+          <button data-act="down" ${i===songs.length-1?'disabled':''} title="Move down">↓</button>
+          <button data-act="rm" title="Remove from setlist">✕</button>
+        </div>` : ''}`;
+      row.addEventListener('click', (e)=>{
+        if (e.target.closest('[data-act]')) return;
+        go({view:'song', songId:s.id, date});
+      });
+      if (editor){
+        row.querySelector('[data-act="up"]').addEventListener('click', (e)=>{
+          e.stopPropagation();
+          const list = STATE.setlists[date]; [list[i-1],list[i]] = [list[i],list[i-1]];
+          saveState(); paintAll();
+        });
+        row.querySelector('[data-act="down"]').addEventListener('click', (e)=>{
+          e.stopPropagation();
+          const list = STATE.setlists[date]; [list[i+1],list[i]] = [list[i],list[i+1]];
+          saveState(); paintAll();
+        });
+        row.querySelector('[data-act="rm"]').addEventListener('click', (e)=>{
+          e.stopPropagation();
+          STATE.setlists[date] = STATE.setlists[date].filter(id=>id!==s.id);
+          saveState(); paintAll();
+        });
+      }
+      setlistEl.appendChild(row);
     });
   }
-  wrap.appendChild(listEl);
 
-  slot.querySelector('#btnPresentHome').addEventListener('click', ()=> openPresent(ids, 0));
-  slot.querySelector('#btnCopySetlist').addEventListener('click', ()=> copySetlistText(date, songs));
-  slot.querySelector('#btnLibrary').addEventListener('click', ()=> go({view:'list'}));
+  function paintLibrary(filter){
+    libraryEl.innerHTML = '';
+    const q = (filter||'').trim().toLowerCase();
+    const setlistIds = STATE.setlists[date] || [];
+    const songs = STATE.songs.filter(s=> !q || s.title.toLowerCase().includes(q));
+    if (songs.length===0){
+      const emptyMsg = STATE.songs.length ? 'No songs match your search'
+        : (editor ? 'No songs yet. Tap "+" to add your first one.' : 'No songs yet.');
+      libraryEl.innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
+      return;
+    }
+    for (const s of songs){
+      const idx = setlistIds.indexOf(s.id);
+      const row = document.createElement('div');
+      row.className = editor ? 'song-row' : 'song-row simple';
+      row.innerHTML = `
+        ${editor ? `<button class="song-badge ${idx===-1?'':'assigned'}" data-act="toggle" title="${idx===-1?"Add to this date's setlist":"Remove from this date's setlist"}">${idx===-1?'':idx+1}</button>` : ''}
+        <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>`;
+      row.addEventListener('click', (e)=>{
+        if (e.target.closest('[data-act]')) return;
+        go({view:'song', songId:s.id, date});
+      });
+      if (editor){
+        row.querySelector('[data-act="toggle"]').addEventListener('click', (e)=>{
+          e.stopPropagation();
+          const list = STATE.setlists[date] = STATE.setlists[date] || [];
+          const i = list.indexOf(s.id);
+          if (i===-1) list.push(s.id); else list.splice(i,1);
+          saveState(); paintAll();
+        });
+      }
+      libraryEl.appendChild(row);
+    }
+  }
+
+  function paintAll(){ paintSetlist(); paintLibrary(search.value); }
+  paintAll();
+  search.addEventListener('input', ()=> paintLibrary(search.value));
+
+  btnPresentHome.addEventListener('click', ()=> openPresent(STATE.setlists[date] || [], 0));
+  btnCopySetlist.addEventListener('click', ()=>{
+    const ids = STATE.setlists[date] || [];
+    copySetlistText(date, ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean));
+  });
   if (editor){
-    slot.querySelector('#btnEditSetlist').addEventListener('click', ()=> openSetlistModal(date));
+    slot.querySelector('#btnAdd').addEventListener('click', ()=> go({view:'edit', songId:null, date}));
     slot.querySelector('#btnPublish').addEventListener('click', publishToGithub);
     slot.querySelector('#btnGhLogout').addEventListener('click', async ()=>{
       const ok = await confirmModal('Log out', `Log out ${getGhEditorName()}? You'll need your token again to make changes.`, 'Log out');
@@ -1557,11 +1659,19 @@ function renderHomeView(date){
   } else {
     slot.querySelector('#btnEditorLogin').addEventListener('click', ()=> openGhSettingsModal(()=> render()));
   }
-  datebar.querySelector('#datePrev').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,-1)}));
-  datebar.querySelector('#dateNext').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,1)}));
-  datebar.querySelector('#datePicker').addEventListener('change', (e)=>{ if (e.target.value) go({view:'home', date: e.target.value}); });
-  const thisWeekBtn = datebar.querySelector('#dateThisWeek');
-  if (thisWeekBtn) thisWeekBtn.addEventListener('click', ()=> go({view:'home', date: nearestSundayISO()}));
+  slot.querySelector('#datePrev').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,-1)}));
+  slot.querySelector('#dateNext').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,1)}));
+  const dateSelect = slot.querySelector('#dateSelect');
+  const datePicker = slot.querySelector('#datePicker');
+  dateSelect.addEventListener('change', (e)=>{
+    if (e.target.value === '__custom__'){
+      if (datePicker.showPicker) datePicker.showPicker(); else datePicker.click();
+      e.target.value = date;
+      return;
+    }
+    go({view:'home', date: e.target.value});
+  });
+  datePicker.addEventListener('change', (e)=>{ if (e.target.value) go({view:'home', date: e.target.value}); });
 
   viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
 }
@@ -1591,119 +1701,12 @@ async function copySetlistText(date, songs){
   }
 }
 
-/* ---- library view (song list / search / editor CRUD) ---- */
-function renderListView(){
-  const wrap = document.createElement('div');
-
-  const editor = isEditorLoggedIn();
-  const pending = editor ? pendingChangeCounts() : { added: 0, deleted: 0 };
-  const slot = document.getElementById('topbarListActions');
-  slot.innerHTML = `
-    <button class="iconbtn" id="btnHome" title="This week's setlist">🏠</button>
-    ${editor ? `
-    <button class="iconbtn primary" id="btnAdd" title="New song${pending.added? ` -- ${pending.added} added locally, not yet published`:''}">+${pending.added? `<span class="btn-badge">${pending.added}</span>` : ''}</button>
-    <button class="iconbtn" id="btnPublish" title="Publish the current song list to GitHub">↑</button>
-    <button class="iconbtn" id="btnGhLogout" title="Log out (${escapeHtml(getGhEditorName()||'')})">🔓</button>
-    ` : `
-    <button class="iconbtn" id="btnEditorLogin" title="Log in as editor to add/edit/delete songs">🔑</button>
-    `}`;
-
-  const banner = renderUnpubBanner();
-  if (banner) wrap.appendChild(banner);
-
-  const search = document.createElement('input');
-  search.className = 'search'; search.placeholder = 'Search song titles…'; search.id = 'searchInput';
-  wrap.appendChild(search);
-
-  const listEl = document.createElement('div');
-  listEl.className = 'song-list';
-  wrap.appendChild(listEl);
-
-  function paint(filter){
-    listEl.innerHTML = '';
-    const q = (filter||'').trim().toLowerCase();
-    const songs = STATE.songs.filter(s=> !q || s.title.toLowerCase().includes(q));
-    if (songs.length===0){
-      const emptyMsg = STATE.songs.length ? 'No songs match your search'
-        : (editor ? 'No songs yet. Tap "+" to add your first one.' : 'No songs yet.');
-      listEl.innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
-      return;
-    }
-    for (const s of songs){
-      const row = document.createElement('div');
-      row.className = 'song-row simple';
-      row.innerHTML = `<div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>`;
-      row.addEventListener('click', ()=> go({view:'song', songId:s.id, back:'list'}));
-      listEl.appendChild(row);
-    }
-  }
-  paint('');
-  search.addEventListener('input', ()=>paint(search.value));
-
-  slot.querySelector('#btnHome').addEventListener('click', ()=> go({view:'home', date: nearestSundayISO()}));
-  if (editor){
-    slot.querySelector('#btnAdd').addEventListener('click', ()=> go({view:'edit', songId:null}));
-    slot.querySelector('#btnPublish').addEventListener('click', publishToGithub);
-    slot.querySelector('#btnGhLogout').addEventListener('click', async ()=>{
-      const ok = await confirmModal('Log out', `Log out ${getGhEditorName()}? You'll need your token again to make changes.`, 'Log out');
-      if (!ok) return;
-      ghLogout();
-      render();
-    });
-  } else {
-    slot.querySelector('#btnEditorLogin').addEventListener('click', ()=> openGhSettingsModal(()=> render()));
-  }
-
-  viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
-}
-
-function openSetlistModal(date){
-  STATE.setlists[date] = STATE.setlists[date] || [];
-  function paintModal(){
-    const list = STATE.setlists[date];
-    const items = list.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
-    const available = STATE.songs.filter(s=> !list.includes(s.id));
-    modalBox.style.maxWidth = '460px';
-    modalBox.innerHTML = `
-      <h3>Edit setlist -- ${escapeHtml(formatDateHeading(date))}</h3>
-      <p class="msg">Add songs to order them, then use the arrows to reorder.</p>
-      <div id="setlistItems" style="max-height:260px;overflow:auto;border:1px solid var(--paper-line);border-radius:9px;margin-bottom:12px;"></div>
-      <select id="addSongSelect" style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);margin-bottom:10px;">
-        <option value="">+ Add a song to the setlist…</option>
-        ${available.map(s=>`<option value="${s.id}">${escapeHtml(s.title)}</option>`).join('')}
-      </select>
-      <div class="modal-actions"><button class="iconbtn primary" id="modalOk">Close</button></div>`;
-    const itemsEl = document.getElementById('setlistItems');
-    items.forEach((s, i)=>{
-      const row = document.createElement('div');
-      row.style.cssText='display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--paper-line);font-size:13.5px;';
-      row.innerHTML = `<span class="pill">${i+1}</span><span style="flex:1;">${escapeHtml(s.title)}</span>`;
-      const up = document.createElement('button'); up.className='iconbtn'; up.textContent='↑'; up.style.cssText='height:26px;padding:0 8px;';
-      const down = document.createElement('button'); down.className='iconbtn'; down.textContent='↓'; down.style.cssText='height:26px;padding:0 8px;';
-      const rm = document.createElement('button'); rm.className='iconbtn danger'; rm.textContent='Remove'; rm.style.cssText='height:26px;padding:0 8px;';
-      up.disabled = i===0; down.disabled = i===items.length-1;
-      up.onclick = ()=>{ [list[i-1],list[i]]=[list[i],list[i-1]]; saveState(); paintModal(); };
-      down.onclick = ()=>{ [list[i+1],list[i]]=[list[i],list[i+1]]; saveState(); paintModal(); };
-      rm.onclick = ()=>{ STATE.setlists[date] = list.filter(id=>id!==s.id); saveState(); paintModal(); };
-      row.appendChild(up); row.appendChild(down); row.appendChild(rm);
-      itemsEl.appendChild(row);
-    });
-    if (items.length===0) itemsEl.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:13px;">No songs in the setlist yet.</div>';
-    document.getElementById('addSongSelect').addEventListener('change', (e)=>{
-      if (e.target.value){ STATE.setlists[date].push(e.target.value); saveState(); paintModal(); }
-    });
-    document.getElementById('modalOk').onclick = ()=>{ closeModal(); render(); };
-  }
-  paintModal();
-  modalBackdrop.classList.add('open');
-}
-
 /* ---- editor view ---- */
 function renderEditView(songId){
   const existing = songId ? STATE.songs.find(s=>s.id===songId) : null;
-  // Preserved so Cancel/Save can return to wherever the editor actually
-  // came from (the home setlist view for a given date, or the library).
-  const cameFrom = { back: route.back, date: route.date };
+  // Preserved so Cancel/Save return to the same date's home view the
+  // editor was actually looking at.
+  const cameFromDate = route.date || nearestSundayISO();
 
   const slot = document.getElementById('topbarEditActions');
   slot.innerHTML = `
@@ -1772,8 +1775,8 @@ function renderEditView(songId){
   refreshPreview();
 
   slot.querySelector('#btnCancel').addEventListener('click', ()=> go(existing
-    ? {view:'song', songId: existing.id, back: cameFrom.back, date: cameFrom.date}
-    : {view:'list'}));
+    ? {view:'song', songId: existing.id, date: cameFromDate}
+    : {view:'home', date: cameFromDate}));
   slot.querySelector('#btnSave').addEventListener('click', ()=>{
     const title = fTitle.value.trim();
     if (!title){ toast('Please enter a title'); fTitle.focus(); return; }
@@ -1781,11 +1784,11 @@ function renderEditView(songId){
     if (existing){
       existing.title = title; existing.keySemitone = ks; existing.keyIsMinor = km; existing.keyPreferFlat = !!pf;
       existing.description = fDesc.value; existing.body = bodyInput.value; existing.updatedAt = Date.now();
-      saveState(); toast('Saved'); go({view:'song', songId: existing.id, back: cameFrom.back, date: cameFrom.date});
+      saveState(); toast('Saved'); go({view:'song', songId: existing.id, date: cameFromDate});
     } else {
       const id = uid();
       STATE.songs.push({ id, title, keySemitone: ks, keyIsMinor: km, keyPreferFlat: !!pf, description: fDesc.value, body: bodyInput.value, createdAt: Date.now(), updatedAt: Date.now() });
-      saveState(); toast('Added'); go({view:'song', songId: id, back: cameFrom.back, date: cameFrom.date});
+      saveState(); toast('Added'); go({view:'song', songId: id, date: cameFromDate});
     }
   });
   if (existing){
@@ -1796,7 +1799,7 @@ function renderEditView(songId){
       for (const d of Object.keys(STATE.setlists)){
         STATE.setlists[d] = STATE.setlists[d].filter(id=>id!==existing.id);
       }
-      saveState(); toast('Deleted'); go({view:'list'});
+      saveState(); toast('Deleted'); go({view:'home', date: cameFromDate});
     });
   }
 }
@@ -1805,7 +1808,7 @@ function renderEditView(songId){
 let songViewPrefs = {}; // per-song: {mode, target, columns, fitMode, fontSize}
 function renderSongView(songId){
   const song = STATE.songs.find(s=>s.id===songId);
-  if (!song){ go({view:'list'}); return; }
+  if (!song){ go({view:'home', date: nearestSundayISO()}); return; }
   const prefs = songViewPrefs[songId] || (songViewPrefs[songId] = {
     mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()
   });
@@ -1900,22 +1903,16 @@ function renderSongView(songId){
     });
   }
 
-  slot.querySelector('#backBtn').addEventListener('click', ()=> go(route.back==='home'
-    ? {view:'home', date: route.date || nearestSundayISO()}
-    : {view:'list'}));
+  slot.querySelector('#backBtn').addEventListener('click', ()=> go({view:'home', date: route.date || nearestSundayISO()}));
   slot.querySelector('#presentOne').addEventListener('click', ()=>{
-    if (route.back==='home'){
-      const ids = STATE.setlists[route.date || nearestSundayISO()] || [];
-      const idx = ids.indexOf(song.id);
-      openPresent(idx===-1? [song.id] : ids, idx===-1?0:idx);
-    } else {
-      openPresent([song.id], 0);
-    }
+    const ids = STATE.setlists[route.date || nearestSundayISO()] || [];
+    const idx = ids.indexOf(song.id);
+    openPresent(idx===-1? [song.id] : ids, idx===-1?0:idx);
   });
   slot.querySelector('#keyBadgeBtn').addEventListener('click', openKeyModal);
   if (isEditorLoggedIn()){
     slot.querySelector('#editSongBtn').addEventListener('click', ()=>{
-      go({view:'edit', songId: song.id});
+      go({view:'edit', songId: song.id, date: route.date});
     });
   }
 
@@ -2025,7 +2022,7 @@ function navigateToAdjacentSong(delta){
   const idx = list.findIndex(s=>s.id===route.songId);
   if (idx === -1) return;
   const next = list[((idx+delta) % list.length + list.length) % list.length];
-  go({view:'song', songId: next.id, back: route.back, date: route.date});
+  go({view:'song', songId: next.id, date: route.date});
 }
 let songTouchStartX=null, songTouchStartY=null;
 viewRoot.addEventListener('touchstart', (e)=>{
