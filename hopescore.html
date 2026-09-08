@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HopeScore</title>
+</head>
+<body>
+<title>HopeScore</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -87,7 +90,6 @@
   }
   .topbar-scroll::-webkit-scrollbar{ display:none; }
   .topbar-scroll > *{ flex:none; }
-  .topbar-spacer{ flex:1 1 0; }
   .topbar-listactions{ display:flex; align-items:center; gap:6px; }
   .topbar-listactions > *{ flex:none; }
   .topbar-listactions .iconbtn, .topbar-scroll .iconbtn{ white-space:nowrap; }
@@ -170,12 +172,8 @@
   .field-row{ display:flex; gap:10px; }
   .field-row > *{ flex:1; }
   #bodyInput{ min-height:340px; line-height:1.55; font-size:14px; }
-  .preview-panel{
-    border:1px solid var(--paper-line); border-radius:14px; background:var(--surface);
-    padding:20px; min-height:340px;
-  }
+  .preview-panel{ min-height:340px; }
   .preview-label{ font-size:12.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-bottom:12px; }
-  .editor-actions{ display:flex; gap:10px; margin-top:6px; justify-content:space-between; }
   .hint{ color:var(--muted); font-size:12px; margin-top:6px; line-height:1.5; }
 
   /* ---------- song view ---------- */
@@ -261,18 +259,13 @@
   [hidden]{ display:none !important; }
   visually-hidden{ display:none; }
 </style>
-</head>
-<body>
 
 <div id="app">
   <div class="topbar" id="topbar">
     <div class="topbar-scroll" id="topbarScroll">
       <div class="topbar-listactions" id="topbarListActions" hidden></div>
       <div class="topbar-listactions" id="topbarSongActions" hidden></div>
-      <div class="topbar-spacer" id="topbarSpacer"></div>
-      <button class="iconbtn" id="exportBtn" title="Export data">Export</button>
-      <button class="iconbtn" id="importBtn" title="Import data">Import</button>
-      <input type="file" id="importFile" accept="application/json" hidden>
+      <div class="topbar-listactions" id="topbarEditActions" hidden></div>
     </div>
   </div>
   <main><div class="wrap" id="viewRoot"></div></main>
@@ -1074,18 +1067,15 @@ function render(){
 function renderTopbar(){
   const listSlot = document.getElementById('topbarListActions');
   const songSlot = document.getElementById('topbarSongActions');
-  const spacer = document.getElementById('topbarSpacer');
-  const utilityBtns = [document.getElementById('exportBtn'), document.getElementById('importBtn')];
+  const editSlot = document.getElementById('topbarEditActions');
 
   listSlot.hidden = route.view !== 'list';
   if (route.view !== 'list') listSlot.innerHTML = '';
   songSlot.hidden = route.view !== 'song';
   if (route.view !== 'song') songSlot.innerHTML = '';
-  // The song toolbar already runs long on its own -- keep Export/Import/Lock
-  // reachable from the list view instead of competing for room here.
-  spacer.hidden = route.view !== 'edit';
-  utilityBtns.forEach(b => { b.hidden = route.view === 'song'; });
-  // list/song slots are populated by renderListView()/renderSongView(), which run right after this
+  editSlot.hidden = route.view !== 'edit';
+  if (route.view !== 'edit') editSlot.innerHTML = '';
+  // list/song/edit slots are populated by renderListView()/renderSongView()/renderEditView(), which run right after this
 }
 
 /* ---- list view ---- */
@@ -1222,6 +1212,13 @@ function openSetlistModal(){
 /* ---- editor view ---- */
 function renderEditView(songId){
   const existing = songId ? STATE.songs.find(s=>s.id===songId) : null;
+
+  const slot = document.getElementById('topbarEditActions');
+  slot.innerHTML = `
+    <button class="iconbtn" id="btnCancel" title="Cancel">←</button>
+    <button class="iconbtn primary" id="btnSave" title="Save">✓</button>
+    ${existing? `<button class="iconbtn danger" id="btnDelete" title="Delete song">🗑</button>` : ''}`;
+
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="list-head"><h2>${existing? 'Edit song' : 'New song'}</h2></div>
@@ -1235,17 +1232,10 @@ function renderEditView(songId){
           <textarea id="bodyInput" class="mono" spellcheck="false">${existing?escapeHtml(existing.body):''}</textarea>
           <div class="hint">Part names (Verse, Chorus, Bridge, Intro, Pre-Chorus, Tag…) are recognized automatically on their own line — no special marks needed. For a custom name, start the line with ##. A chord-only line followed directly by a lyric line is paired and aligned automatically. A progression with no lyrics (like an intro) can be left as a chord line on its own.</div>
         </div>
-        <div class="editor-actions">
-          <div>${existing? `<button class="iconbtn danger" id="btnDelete">Delete</button>` : ''}</div>
-          <div style="display:flex;gap:8px;">
-            <button class="iconbtn" id="btnCancel">Cancel</button>
-            <button class="iconbtn primary" id="btnSave">Save</button>
-          </div>
-        </div>
       </div>
       <div class="preview-panel">
         <div class="preview-label">Preview</div>
-        <div class="chart mono" id="livePreview"></div>
+        <div class="chart-card"><div class="chart mono" id="livePreview"></div></div>
       </div>
     </div>`;
   viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
@@ -1255,18 +1245,22 @@ function renderEditView(songId){
   const fDesc = document.getElementById('fDesc');
   const bodyInput = document.getElementById('bodyInput');
   const preview = document.getElementById('livePreview');
+  const previewCard = preview.parentElement;
 
   function refreshPreview(){
     const [ks, km] = fKey.value.split(':').map(Number);
     const song = { title: fTitle.value||'(Untitled)', description: fDesc.value, body: bodyInput.value, keySemitone: ks, keyIsMinor: km };
     const rows = computeSongRows(song, 'original', null);
-    rowsToChartDom(rows, preview);
+    requestAnimationFrame(()=>{
+      const boxWidth = previewCard.clientWidth - 60;
+      layoutChart(preview, rows, 1, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize()});
+    });
   }
   [fTitle, fKey, fDesc, bodyInput].forEach(el=> el.addEventListener('input', refreshPreview));
   refreshPreview();
 
-  document.getElementById('btnCancel').addEventListener('click', ()=> go({view: existing? 'song':'list', songId: existing? existing.id : undefined}));
-  document.getElementById('btnSave').addEventListener('click', ()=>{
+  slot.querySelector('#btnCancel').addEventListener('click', ()=> go({view: existing? 'song':'list', songId: existing? existing.id : undefined}));
+  slot.querySelector('#btnSave').addEventListener('click', ()=>{
     const title = fTitle.value.trim();
     if (!title){ toast('Please enter a title'); fTitle.focus(); return; }
     const [ks, km] = fKey.value.split(':').map(Number);
@@ -1281,7 +1275,7 @@ function renderEditView(songId){
     }
   });
   if (existing){
-    document.getElementById('btnDelete').addEventListener('click', async ()=>{
+    slot.querySelector('#btnDelete').addEventListener('click', async ()=>{
       const ok = await confirmModal('Delete song', `Delete "${existing.title}"? This can't be undone.`);
       if (!ok) return;
       STATE.songs = STATE.songs.filter(x=>x.id!==existing.id);
@@ -1520,56 +1514,7 @@ window.addEventListener('resize', ()=>{
 });
 
 /* =========================================================================
-   9. Export / import
-   ========================================================================= */
-function downloadBlob(filename, text, mime){
-  const blob = new Blob([text], {type: mime||'application/octet-stream'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url), 2000);
-}
-document.getElementById('exportBtn').addEventListener('click', async ()=>{
-  const data = JSON.stringify(STATE, null, 2);
-  const filename = `hopescore-backup-${new Date().toISOString().slice(0,10)}.json`;
-  // Running inside the claude.ai artifact viewer: use the sanctioned save dialog.
-  if (typeof claude !== 'undefined' && claude.use){
-    try{
-      const downloads = await claude.use('downloads');
-      if (downloads){
-        try{ await downloads.save({filename, data}); toast('Backup saved'); }
-        catch(err){ toast('Save canceled'); }
-        return;
-      }
-    }catch(err){ /* fall through to plain download */ }
-  }
-  // Running as a standalone local file (or anywhere claude.use isn't available): normal browser download.
-  downloadBlob(filename, data, 'application/json');
-  toast('Backup saved');
-});
-document.getElementById('importBtn').addEventListener('click', ()=>{
-  document.getElementById('importFile').click();
-});
-document.getElementById('importFile').addEventListener('change', async (e)=>{
-  const file = e.target.files[0];
-  if (!file) return;
-  try{
-    const text = await file.text();
-    const data = JSON.parse(text);
-    if (!Array.isArray(data.songs)) throw new Error('invalid');
-    const ok = await confirmModal('Import data', `This will replace your current songs with the data from "${file.name}". Continue?`);
-    if (!ok) return;
-    STATE = data;
-    saveState();
-    toast('Import complete');
-    go({view:'list'});
-  }catch(err){ toast('Not a valid backup file'); }
-  e.target.value='';
-});
-
-/* =========================================================================
-   10. Init
+   9. Init
    ========================================================================= */
 (async function init(){
   if (document.fonts && document.fonts.ready){
