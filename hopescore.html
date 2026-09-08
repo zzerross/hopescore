@@ -169,6 +169,19 @@
     background:var(--surface); border:1px solid var(--paper-line); color:var(--muted);
   }
 
+  /* ---------- home (weekly setlist) view ---------- */
+  .setlist-datebar{ display:flex; align-items:center; justify-content:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
+  .setlist-dateheading{ font-family:'Fraunces'; font-weight:700; font-size:22px; min-width:120px; text-align:center; }
+  .date-input{
+    height:34px; padding:0 8px; border-radius:8px; border:1px solid var(--paper-line);
+    background:var(--surface); color:var(--ink); font-size:13px;
+  }
+  .setlist-row{ grid-template-columns:30px 1fr auto; }
+  .setlist-row .pill{ flex-shrink:0; }
+  /* Library rows have no per-row badge (setlist membership is now managed
+     from the home view, not per-song here), so they only need one column. */
+  .song-row.simple{ grid-template-columns:1fr; }
+
   /* ---------- editor view ---------- */
   .editor-grid{ display:grid; grid-template-columns:360px 1fr; gap:28px; align-items:start; }
   @media (max-width:860px){ .editor-grid{ grid-template-columns:1fr; } }
@@ -286,6 +299,7 @@
 <div id="app">
   <div class="topbar" id="topbar">
     <div class="topbar-scroll" id="topbarScroll">
+      <div class="topbar-listactions" id="topbarHomeActions" hidden></div>
       <div class="topbar-listactions" id="topbarListActions" hidden></div>
       <div class="topbar-listactions" id="topbarSongActions" hidden></div>
       <div class="topbar-listactions" id="topbarEditActions" hidden></div>
@@ -461,6 +475,41 @@ function keyLabel(semitone, isMinor, preferFlat){
     preferFlat = keyPreference(relMajor) === 'flat';
   }
   return spellNote(semitone, preferFlat) + (isMinor?'m':'');
+}
+function songKeyLabel(song){
+  return keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
+}
+
+/* ---- date helpers (for the weekly setlist / home view) ---- */
+// Function declarations (not const) so they're safely callable from code
+// that runs at the top of the script, before this point in the file has
+// executed -- see the GH_TOKEN_KEY comment above loadState() for the TDZ
+// trap this sidesteps.
+function toISODate(d){
+  const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function isoDateParts(iso){
+  const [y,m,d] = iso.split('-').map(Number);
+  return new Date(y, m-1, d);
+}
+// The Sunday of "this week" -- today itself if today is a Sunday, otherwise
+// the coming Sunday. That's always the service this app's setlist is for,
+// whether you're opening it mid-week to plan or during the service itself.
+function nearestSundayISO(){
+  const d = new Date();
+  d.setDate(d.getDate() + ((7 - d.getDay()) % 7));
+  return toISODate(d);
+}
+function addWeeksISO(iso, weeks){
+  const d = isoDateParts(iso);
+  d.setDate(d.getDate() + weeks*7);
+  return toISODate(d);
+}
+const KOREAN_WEEKDAYS = ['일','월','화','수','목','금','토'];
+function formatDateHeading(iso){
+  const d = isoDateParts(iso);
+  return `${d.getMonth()+1}/${d.getDate()} (${KOREAN_WEEKDAYS[d.getDay()]})`;
 }
 // Splits a title like "We Fall Down by Chris Tomlin" into the song name and
 // the attribution, so lists can show just the name and the song page can
@@ -698,20 +747,70 @@ function pendingChangeCounts(){
   };
 }
 
+// Setlists are keyed by date ("YYYY-MM-DD", normally a Sunday) and are
+// shared/published data too -- multiple editors build the same week's
+// setlist from different devices, so they need the same
+// publish/baseline/merge treatment as the song library (see
+// mergeSetlistsForPublish() below for how concurrent edits combine instead
+// of clobbering each other).
+const GH_LAST_PUBLISHED_SETLISTS_KEY = 'hopescore_gh_last_published_setlists_v1';
+function getLastPublishedSetlists(){
+  try{
+    const raw = localStorage.getItem(GH_LAST_PUBLISHED_SETLISTS_KEY);
+    if (!raw) return null;
+    const { setlists, ts } = JSON.parse(raw);
+    if (Date.now() - ts > GH_LAST_PUBLISHED_TRUST_MS) return null;
+    return setlists;
+  }catch(e){ return null; }
+}
+function setLastPublishedSetlists(setlists){
+  localStorage.setItem(GH_LAST_PUBLISHED_SETLISTS_KEY, JSON.stringify({ setlists, ts: Date.now() }));
+}
+function publishedBaselineSetlists(){
+  return getLastPublishedSetlists() || seedState().setlists;
+}
+function setlistsSignature(setlists){
+  const dates = Object.keys(setlists||{}).filter(d => (setlists[d]||[]).length).sort();
+  return JSON.stringify(dates.map(d => [d, setlists[d]]));
+}
+function hasUnpublishedChanges(){
+  if (!isEditorLoggedIn()) return false;
+  return songsSignature(STATE.songs) !== songsSignature(publishedBaselineSongs())
+    || setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists());
+}
+// A short human summary of what's unpublished, for the banner -- e.g.
+// "2 songs added, setlist updated" -- so an editor doesn't have to guess
+// what they're about to publish.
+function unpublishedChangesSummary(){
+  const parts = [];
+  const { added, deleted } = pendingChangeCounts();
+  if (added) parts.push(`${added} song${added>1?'s':''} added`);
+  if (deleted) parts.push(`${deleted} song${deleted>1?'s':''} deleted`);
+  if (setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())) parts.push('setlist updated');
+  return parts.length ? parts.join(', ') : 'local changes';
+}
+
 function loadState(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
     if (raw){
       const saved = JSON.parse(raw);
+      // Older saves (before dated setlists existed) kept a single flat
+      // `setlist` array with no date -- fold it into this week's Sunday
+      // once, rather than losing whatever was already picked.
+      let setlists = saved.setlists;
+      if (!setlists){
+        setlists = (saved.setlist && saved.setlist.length) ? { [nearestSundayISO()]: saved.setlist } : {};
+      }
       // An editor (this device has a publish token configured) keeps their
-      // own local song edits across reloads, so a draft survives until they
-      // hit Publish. Everyone else always sees this load's song list -- the
-      // latest published version when online, or the last-cached one when
-      // offline (the service worker's network-first strategy already
-      // handles that at the file level) -- only their setlist and device
+      // own local song/setlist edits across reloads, so a draft survives
+      // until they hit Publish. Everyone else always sees this load's
+      // published data -- the latest version when online, or the
+      // last-cached one when offline (the service worker's network-first
+      // strategy already handles that at the file level) -- only device
       // settings stay personal/local.
-      if (getGhToken()) return saved;
-      return { songs: seedState().songs, setlist: saved.setlist || [], settings: saved.settings || {} };
+      if (getGhToken()) return { songs: saved.songs || seedState().songs, setlists, settings: saved.settings || {} };
+      return { songs: seedState().songs, setlists: seedState().setlists, settings: saved.settings || {} };
     }
   }catch(e){}
   return seedState();
@@ -937,11 +1036,14 @@ function seedState(){
   }
 ];
   /* SEED_SONGS_END */
+  /* SEED_SETLISTS_START */
+  const seedSetlists = {};
+  /* SEED_SETLISTS_END */
   const now = Date.now();
   for (const s of seedSongs){ s.createdAt = now; s.updatedAt = now; }
   return {
     songs: seedSongs,
-    setlist: [],
+    setlists: seedSetlists,
     settings: {},
   };
 }
@@ -1322,7 +1424,11 @@ function layoutChart(container, rows, columns, boxWidth, boxHeight, opts){
    7. Views
    ========================================================================= */
 const viewRoot = document.getElementById('viewRoot');
-let route = {view:'list'};
+// 'home' (this week's dated setlist) is the default landing view -- see
+// scenario in the "weekly setlist" feature: most opens, including during
+// the service itself, want today's/this week's setlist front and center,
+// with the full song library one tap away rather than the default.
+let route = {view:'home', date: nearestSundayISO()};
 let activeSongRepaint = null;
 
 function go(r){ route = r; render(); window.scrollTo(0,0); }
@@ -1336,26 +1442,156 @@ function render(){
   }
   renderTopbar();
   viewRoot.classList.toggle('song-view', route.view==='song');
-  if (route.view==='list') renderListView();
+  if (route.view==='home') renderHomeView(route.date || nearestSundayISO());
+  else if (route.view==='list') renderListView();
   else if (route.view==='edit') renderEditView(route.songId||null);
   else if (route.view==='song') renderSongView(route.songId);
 }
 
 function renderTopbar(){
+  const homeSlot = document.getElementById('topbarHomeActions');
   const listSlot = document.getElementById('topbarListActions');
   const songSlot = document.getElementById('topbarSongActions');
   const editSlot = document.getElementById('topbarEditActions');
 
+  homeSlot.hidden = route.view !== 'home';
+  if (route.view !== 'home') homeSlot.innerHTML = '';
   listSlot.hidden = route.view !== 'list';
   if (route.view !== 'list') listSlot.innerHTML = '';
   songSlot.hidden = route.view !== 'song';
   if (route.view !== 'song') songSlot.innerHTML = '';
   editSlot.hidden = route.view !== 'edit';
   if (route.view !== 'edit') editSlot.innerHTML = '';
-  // list/song/edit slots are populated by renderListView()/renderSongView()/renderEditView(), which run right after this
+  // home/list/song/edit slots are populated by renderHomeView()/renderListView()/renderSongView()/renderEditView(), which run right after this
 }
 
 /* ---- list view ---- */
+// Shared by the home (setlist) and library views -- an editor with any
+// unpublished song or setlist change sees this, wherever they are.
+function renderUnpubBanner(){
+  if (!isEditorLoggedIn() || !hasUnpublishedChanges()) return null;
+  const banner = document.createElement('div');
+  banner.className = 'unpub-banner';
+  banner.innerHTML = `
+    <span>You have unpublished changes: ${unpublishedChangesSummary()}.</span>
+    <button class="iconbtn primary" id="banPublish">Publish now</button>
+    <button class="iconbtn danger" id="banDiscard">Discard</button>`;
+  banner.querySelector('#banPublish').addEventListener('click', publishToGithub);
+  banner.querySelector('#banDiscard').addEventListener('click', async ()=>{
+    const ok = await confirmModal('Discard local changes', "Replace your local songs and setlist with the currently published version? This can't be undone.", 'Discard');
+    if (!ok) return;
+    const seed = seedState();
+    STATE.songs = seed.songs;
+    STATE.setlists = seed.setlists;
+    saveState();
+    render();
+    toast('Discarded -- back to the published version');
+  });
+  return banner;
+}
+
+/* ---- home view (this week's -- or any date's -- setlist) ---- */
+function renderHomeView(date){
+  const wrap = document.createElement('div');
+  const editor = isEditorLoggedIn();
+  const ids = STATE.setlists[date] || [];
+  const songs = ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
+
+  const slot = document.getElementById('topbarHomeActions');
+  slot.innerHTML = `
+    <button class="iconbtn primary" id="btnPresentHome" title="Present fullscreen" ${songs.length? '' : 'disabled'}>▶</button>
+    <button class="iconbtn" id="btnCopySetlist" title="Copy setlist as text" ${songs.length? '' : 'disabled'}>⎘</button>
+    ${editor ? `<button class="iconbtn" id="btnEditSetlist" title="Add / remove / reorder songs">✎</button>` : ''}
+    <button class="iconbtn" id="btnLibrary" title="Song library">🎼</button>
+    ${editor ? `
+    <button class="iconbtn" id="btnPublish" title="Publish the current song list and setlist to GitHub">↑</button>
+    <button class="iconbtn" id="btnGhLogout" title="Log out (${escapeHtml(getGhEditorName()||'')})">🔓</button>
+    ` : `
+    <button class="iconbtn" id="btnEditorLogin" title="Log in as editor to manage the setlist">🔑</button>
+    `}`;
+
+  const banner = renderUnpubBanner();
+  if (banner) wrap.appendChild(banner);
+
+  const datebar = document.createElement('div');
+  datebar.className = 'setlist-datebar';
+  datebar.innerHTML = `
+    <button class="iconbtn" id="datePrev" title="Previous week">‹</button>
+    <div class="setlist-dateheading">${escapeHtml(formatDateHeading(date))}</div>
+    <button class="iconbtn" id="dateNext" title="Next week">›</button>
+    <input type="date" id="datePicker" class="date-input" value="${date}" title="Pick a different date">
+    ${date !== nearestSundayISO() ? `<button class="pill" id="dateThisWeek" style="cursor:pointer;border:none;">This week</button>` : ''}
+  `;
+  wrap.appendChild(datebar);
+
+  const listEl = document.createElement('div');
+  listEl.className = 'song-list';
+  if (songs.length===0){
+    listEl.innerHTML = `<div class="empty-state">${editor ? 'No songs in this setlist yet. Tap "✎" to add some.' : 'No setlist for this date yet.'}</div>`;
+  } else {
+    songs.forEach((s,i)=>{
+      const row = document.createElement('div');
+      row.className = 'song-row setlist-row';
+      row.innerHTML = `
+        <span class="song-badge assigned">${i+1}</span>
+        <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>
+        <span class="pill">${escapeHtml(songKeyLabel(s))}</span>`;
+      row.addEventListener('click', ()=> go({view:'song', songId:s.id, back:'home', date}));
+      listEl.appendChild(row);
+    });
+  }
+  wrap.appendChild(listEl);
+
+  slot.querySelector('#btnPresentHome').addEventListener('click', ()=> openPresent(ids, 0));
+  slot.querySelector('#btnCopySetlist').addEventListener('click', ()=> copySetlistText(date, songs));
+  slot.querySelector('#btnLibrary').addEventListener('click', ()=> go({view:'list'}));
+  if (editor){
+    slot.querySelector('#btnEditSetlist').addEventListener('click', ()=> openSetlistModal(date));
+    slot.querySelector('#btnPublish').addEventListener('click', publishToGithub);
+    slot.querySelector('#btnGhLogout').addEventListener('click', async ()=>{
+      const ok = await confirmModal('Log out', `Log out ${getGhEditorName()}? You'll need your token again to make changes.`, 'Log out');
+      if (!ok) return;
+      ghLogout();
+      render();
+    });
+  } else {
+    slot.querySelector('#btnEditorLogin').addEventListener('click', ()=> openGhSettingsModal(()=> render()));
+  }
+  datebar.querySelector('#datePrev').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,-1)}));
+  datebar.querySelector('#dateNext').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,1)}));
+  datebar.querySelector('#datePicker').addEventListener('change', (e)=>{ if (e.target.value) go({view:'home', date: e.target.value}); });
+  const thisWeekBtn = datebar.querySelector('#dateThisWeek');
+  if (thisWeekBtn) thisWeekBtn.addEventListener('click', ()=> go({view:'home', date: nearestSundayISO()}));
+
+  viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
+}
+
+// Plain-text rendering for sharing a setlist in a group chat: date, then one
+// "n. Title - Key" line per song.
+async function copySetlistText(date, songs){
+  if (songs.length===0) return;
+  const lines = [`${formatDateHeading(date)} setlist`, ...songs.map((s,i)=>`${i+1}. ${splitTitleArtist(s.title).main} - ${songKeyLabel(s)}`)];
+  const text = lines.join('\n');
+  try{
+    await navigator.clipboard.writeText(text);
+    toast('Copied to clipboard');
+    return;
+  }catch(e){}
+  // Clipboard API can be unavailable (some file:// opens, older WebViews) --
+  // fall back to a hidden textarea + execCommand.
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast('Copied to clipboard');
+  }catch(e){
+    toast("Couldn't copy -- select and copy manually");
+  }
+}
+
+/* ---- library view (song list / search / editor CRUD) ---- */
 function renderListView(){
   const wrap = document.createElement('div');
 
@@ -1363,47 +1599,17 @@ function renderListView(){
   const pending = editor ? pendingChangeCounts() : { added: 0, deleted: 0 };
   const slot = document.getElementById('topbarListActions');
   slot.innerHTML = `
-    <button class="iconbtn" id="btnSetlist" title="Edit setlist">🎵<span class="btn-badge" id="setlistCount">${STATE.setlist.length}</span></button>
-    <button class="iconbtn" id="btnClearSetlist" title="Clear setlist" ${STATE.setlist.length? '' : 'disabled'}>🧹</button>
-    <button class="iconbtn primary" id="btnPresent" title="Present fullscreen" ${STATE.setlist.length? '' : 'disabled'}>▶</button>
+    <button class="iconbtn" id="btnHome" title="This week's setlist">🏠</button>
     ${editor ? `
     <button class="iconbtn primary" id="btnAdd" title="New song${pending.added? ` -- ${pending.added} added locally, not yet published`:''}">+${pending.added? `<span class="btn-badge">${pending.added}</span>` : ''}</button>
-    <button class="iconbtn danger" id="btnDeleteSelected" title="Delete the songs currently numbered in the setlist${pending.deleted? ` (${pending.deleted} deleted locally, not yet published)`:''}" ${STATE.setlist.length? '' : 'disabled'}>🗑${pending.deleted? `<span class="btn-badge">${pending.deleted}</span>` : ''}</button>
     <button class="iconbtn" id="btnPublish" title="Publish the current song list to GitHub">↑</button>
     <button class="iconbtn" id="btnGhLogout" title="Log out (${escapeHtml(getGhEditorName()||'')})">🔓</button>
     ` : `
     <button class="iconbtn" id="btnEditorLogin" title="Log in as editor to add/edit/delete songs">🔑</button>
     `}`;
-  const setlistBtn = slot.querySelector('#btnSetlist');
-  const setlistCount = slot.querySelector('#setlistCount');
-  const clearSetlistBtn = slot.querySelector('#btnClearSetlist');
-  const deleteSelectedBtn = slot.querySelector('#btnDeleteSelected');
-  const presentBtn = slot.querySelector('#btnPresent');
-  function refreshHeaderCounts(){
-    setlistCount.textContent = STATE.setlist.length;
-    clearSetlistBtn.disabled = STATE.setlist.length===0;
-    if (deleteSelectedBtn) deleteSelectedBtn.disabled = STATE.setlist.length===0;
-    presentBtn.disabled = STATE.setlist.length===0;
-  }
 
-  if (editor && hasUnpublishedChanges()){
-    const banner = document.createElement('div');
-    banner.className = 'unpub-banner';
-    banner.innerHTML = `
-      <span>You have unpublished local changes.</span>
-      <button class="iconbtn primary" id="banPublish">Publish now</button>
-      <button class="iconbtn danger" id="banDiscard">Discard</button>`;
-    banner.querySelector('#banPublish').addEventListener('click', publishToGithub);
-    banner.querySelector('#banDiscard').addEventListener('click', async ()=>{
-      const ok = await confirmModal('Discard local changes', "Replace your local song list with the currently published version? This can't be undone.", 'Discard');
-      if (!ok) return;
-      STATE.songs = seedState().songs;
-      saveState();
-      renderListView();
-      toast('Discarded -- back to the published version');
-    });
-    wrap.appendChild(banner);
-  }
+  const banner = renderUnpubBanner();
+  if (banner) wrap.appendChild(banner);
 
   const search = document.createElement('input');
   search.className = 'search'; search.placeholder = 'Search song titles…'; search.id = 'searchInput';
@@ -1424,31 +1630,17 @@ function renderListView(){
       return;
     }
     for (const s of songs){
-      const idx = STATE.setlist.indexOf(s.id);
       const row = document.createElement('div');
-      row.className = 'song-row';
-      row.innerHTML = `
-        <button class="song-badge ${idx===-1?'':'assigned'}" data-act="toggle-setlist" title="${idx===-1?'Add to setlist':'Remove from setlist'}">${idx===-1?'':idx+1}</button>
-        <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>`;
-      row.addEventListener('click', (e)=>{
-        if (e.target.closest('[data-act]')) return;
-        go({view:'song', songId:s.id});
-      });
-      row.querySelector('[data-act="toggle-setlist"]').addEventListener('click', (e)=>{
-        e.stopPropagation();
-        const i = STATE.setlist.indexOf(s.id);
-        if (i===-1) STATE.setlist.push(s.id);
-        else STATE.setlist.splice(i,1);
-        saveState();
-        refreshHeaderCounts();
-        paint(search.value);
-      });
+      row.className = 'song-row simple';
+      row.innerHTML = `<div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>`;
+      row.addEventListener('click', ()=> go({view:'song', songId:s.id, back:'list'}));
       listEl.appendChild(row);
     }
   }
   paint('');
   search.addEventListener('input', ()=>paint(search.value));
 
+  slot.querySelector('#btnHome').addEventListener('click', ()=> go({view:'home', date: nearestSundayISO()}));
   if (editor){
     slot.querySelector('#btnAdd').addEventListener('click', ()=> go({view:'edit', songId:null}));
     slot.querySelector('#btnPublish').addEventListener('click', publishToGithub);
@@ -1458,42 +1650,22 @@ function renderListView(){
       ghLogout();
       render();
     });
-    deleteSelectedBtn.addEventListener('click', async ()=>{
-      const targets = STATE.setlist.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
-      if (targets.length===0) return;
-      const names = targets.map(s=>s.title).join(', ');
-      const ok = await confirmModal('Delete selected songs', `Permanently delete ${targets.length} song(s): ${names}? This can't be undone.`);
-      if (!ok) return;
-      const idsToDelete = new Set(STATE.setlist);
-      STATE.songs = STATE.songs.filter(s=>!idsToDelete.has(s.id));
-      STATE.setlist = [];
-      saveState();
-      renderListView();
-    });
   } else {
     slot.querySelector('#btnEditorLogin').addEventListener('click', ()=> openGhSettingsModal(()=> render()));
   }
-  setlistBtn.addEventListener('click', openSetlistModal);
-  clearSetlistBtn.addEventListener('click', async ()=>{
-    const ok = await confirmModal('Clear setlist', 'Remove all songs from the setlist? You can add them again anytime.', 'Clear');
-    if (!ok) return;
-    STATE.setlist = [];
-    saveState();
-    refreshHeaderCounts();
-    paint(search.value);
-  });
-  presentBtn.addEventListener('click', ()=> openPresent(STATE.setlist, 0));
 
   viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
 }
 
-function openSetlistModal(){
+function openSetlistModal(date){
+  STATE.setlists[date] = STATE.setlists[date] || [];
   function paintModal(){
-    const items = STATE.setlist.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
-    const available = STATE.songs.filter(s=> !STATE.setlist.includes(s.id));
+    const list = STATE.setlists[date];
+    const items = list.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
+    const available = STATE.songs.filter(s=> !list.includes(s.id));
     modalBox.style.maxWidth = '460px';
     modalBox.innerHTML = `
-      <h3>Edit setlist</h3>
+      <h3>Edit setlist -- ${escapeHtml(formatDateHeading(date))}</h3>
       <p class="msg">Add songs to order them, then use the arrows to reorder.</p>
       <div id="setlistItems" style="max-height:260px;overflow:auto;border:1px solid var(--paper-line);border-radius:9px;margin-bottom:12px;"></div>
       <select id="addSongSelect" style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);margin-bottom:10px;">
@@ -1510,17 +1682,17 @@ function openSetlistModal(){
       const down = document.createElement('button'); down.className='iconbtn'; down.textContent='↓'; down.style.cssText='height:26px;padding:0 8px;';
       const rm = document.createElement('button'); rm.className='iconbtn danger'; rm.textContent='Remove'; rm.style.cssText='height:26px;padding:0 8px;';
       up.disabled = i===0; down.disabled = i===items.length-1;
-      up.onclick = ()=>{ [STATE.setlist[i-1],STATE.setlist[i]]=[STATE.setlist[i],STATE.setlist[i-1]]; saveState(); paintModal(); };
-      down.onclick = ()=>{ [STATE.setlist[i+1],STATE.setlist[i]]=[STATE.setlist[i],STATE.setlist[i+1]]; saveState(); paintModal(); };
-      rm.onclick = ()=>{ STATE.setlist = STATE.setlist.filter(id=>id!==s.id); saveState(); paintModal(); };
+      up.onclick = ()=>{ [list[i-1],list[i]]=[list[i],list[i-1]]; saveState(); paintModal(); };
+      down.onclick = ()=>{ [list[i+1],list[i]]=[list[i],list[i+1]]; saveState(); paintModal(); };
+      rm.onclick = ()=>{ STATE.setlists[date] = list.filter(id=>id!==s.id); saveState(); paintModal(); };
       row.appendChild(up); row.appendChild(down); row.appendChild(rm);
       itemsEl.appendChild(row);
     });
     if (items.length===0) itemsEl.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:13px;">No songs in the setlist yet.</div>';
     document.getElementById('addSongSelect').addEventListener('change', (e)=>{
-      if (e.target.value){ STATE.setlist.push(e.target.value); saveState(); paintModal(); }
+      if (e.target.value){ STATE.setlists[date].push(e.target.value); saveState(); paintModal(); }
     });
-    document.getElementById('modalOk').onclick = ()=>{ closeModal(); renderListView(); };
+    document.getElementById('modalOk').onclick = ()=>{ closeModal(); render(); };
   }
   paintModal();
   modalBackdrop.classList.add('open');
@@ -1529,6 +1701,9 @@ function openSetlistModal(){
 /* ---- editor view ---- */
 function renderEditView(songId){
   const existing = songId ? STATE.songs.find(s=>s.id===songId) : null;
+  // Preserved so Cancel/Save can return to wherever the editor actually
+  // came from (the home setlist view for a given date, or the library).
+  const cameFrom = { back: route.back, date: route.date };
 
   const slot = document.getElementById('topbarEditActions');
   slot.innerHTML = `
@@ -1596,7 +1771,9 @@ function renderEditView(songId){
   [fTitle, fKey, fDesc, bodyInput].forEach(el=> el.addEventListener('input', refreshPreview));
   refreshPreview();
 
-  slot.querySelector('#btnCancel').addEventListener('click', ()=> go({view: existing? 'song':'list', songId: existing? existing.id : undefined}));
+  slot.querySelector('#btnCancel').addEventListener('click', ()=> go(existing
+    ? {view:'song', songId: existing.id, back: cameFrom.back, date: cameFrom.date}
+    : {view:'list'}));
   slot.querySelector('#btnSave').addEventListener('click', ()=>{
     const title = fTitle.value.trim();
     if (!title){ toast('Please enter a title'); fTitle.focus(); return; }
@@ -1604,11 +1781,11 @@ function renderEditView(songId){
     if (existing){
       existing.title = title; existing.keySemitone = ks; existing.keyIsMinor = km; existing.keyPreferFlat = !!pf;
       existing.description = fDesc.value; existing.body = bodyInput.value; existing.updatedAt = Date.now();
-      saveState(); toast('Saved'); go({view:'song', songId: existing.id});
+      saveState(); toast('Saved'); go({view:'song', songId: existing.id, back: cameFrom.back, date: cameFrom.date});
     } else {
       const id = uid();
       STATE.songs.push({ id, title, keySemitone: ks, keyIsMinor: km, keyPreferFlat: !!pf, description: fDesc.value, body: bodyInput.value, createdAt: Date.now(), updatedAt: Date.now() });
-      saveState(); toast('Added'); go({view:'song', songId: id});
+      saveState(); toast('Added'); go({view:'song', songId: id, back: cameFrom.back, date: cameFrom.date});
     }
   });
   if (existing){
@@ -1616,7 +1793,9 @@ function renderEditView(songId){
       const ok = await confirmModal('Delete song', `Delete "${existing.title}"? This can't be undone.`);
       if (!ok) return;
       STATE.songs = STATE.songs.filter(x=>x.id!==existing.id);
-      STATE.setlist = STATE.setlist.filter(id=>id!==existing.id);
+      for (const d of Object.keys(STATE.setlists)){
+        STATE.setlists[d] = STATE.setlists[d].filter(id=>id!==existing.id);
+      }
       saveState(); toast('Deleted'); go({view:'list'});
     });
   }
@@ -1721,10 +1900,17 @@ function renderSongView(songId){
     });
   }
 
-  slot.querySelector('#backBtn').addEventListener('click', ()=>go({view:'list'}));
+  slot.querySelector('#backBtn').addEventListener('click', ()=> go(route.back==='home'
+    ? {view:'home', date: route.date || nearestSundayISO()}
+    : {view:'list'}));
   slot.querySelector('#presentOne').addEventListener('click', ()=>{
-    const idx = STATE.setlist.indexOf(song.id);
-    openPresent(idx===-1? [song.id] : STATE.setlist, idx===-1?0:idx);
+    if (route.back==='home'){
+      const ids = STATE.setlists[route.date || nearestSundayISO()] || [];
+      const idx = ids.indexOf(song.id);
+      openPresent(idx===-1? [song.id] : ids, idx===-1?0:idx);
+    } else {
+      openPresent([song.id], 0);
+    }
   });
   slot.querySelector('#keyBadgeBtn').addEventListener('click', openKeyModal);
   if (isEditorLoggedIn()){
@@ -1839,7 +2025,7 @@ function navigateToAdjacentSong(delta){
   const idx = list.findIndex(s=>s.id===route.songId);
   if (idx === -1) return;
   const next = list[((idx+delta) % list.length + list.length) % list.length];
-  go({view:'song', songId: next.id});
+  go({view:'song', songId: next.id, back: route.back, date: route.date});
 }
 let songTouchStartX=null, songTouchStartY=null;
 viewRoot.addEventListener('touchstart', (e)=>{
@@ -1981,11 +2167,58 @@ function openGhSettingsModal(onSaved){
   };
 }
 
+// Reads whatever setlists block is currently on GitHub, so publishing can
+// merge against the real live state instead of blindly overwriting it with
+// this device's own (possibly stale) local copy -- see
+// mergeSetlistsForPublish() for why that matters.
+function extractSeedSetlistsFromText(text){
+  const startMarker = '/* SEED_SETLISTS_START */';
+  const endMarker = '/* SEED_SETLISTS_END */';
+  const startIdx = text.indexOf(startMarker);
+  const endIdx = text.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return null;
+  const block = text.slice(startIdx + startMarker.length, endIdx);
+  const m = block.match(/const seedSetlists\s*=\s*([\s\S]*?);\s*$/);
+  if (!m) return null;
+  try{ return JSON.parse(m[1]); }catch(e){ return null; }
+}
+// Two editors can each add a different song to the same date's setlist from
+// two devices without either publish erasing the other's pick: for each
+// date, start from whatever's actually live on GitHub right now (fetched
+// moments ago, in publishToGithub()), drop only the ids this editor
+// explicitly removed since their own last-known-published baseline, then
+// add whatever they've locally added that isn't already there. Order isn't
+// preserved perfectly across a concurrent add (new picks land at the end),
+// but nothing anyone else already published gets silently dropped.
+function mergeSetlistsForPublish(serverSetlists){
+  const baseline = publishedBaselineSetlists();
+  const dates = new Set([
+    ...Object.keys(serverSetlists||{}),
+    ...Object.keys(STATE.setlists||{}),
+    ...Object.keys(baseline||{}),
+  ]);
+  const merged = {};
+  for (const date of dates){
+    const server = (serverSetlists && serverSetlists[date]) || [];
+    const local = (STATE.setlists && STATE.setlists[date]) || [];
+    const base = (baseline && baseline[date]) || [];
+    const baseSet = new Set(base);
+    const localSet = new Set(local);
+    const added = local.filter(id => !baseSet.has(id));
+    const removedSet = new Set(base.filter(id => !localSet.has(id)));
+    const result = server.filter(id => !removedSet.has(id));
+    const resultSet = new Set(result);
+    for (const id of added){ if (!resultSet.has(id)){ result.push(id); resultSet.add(id); } }
+    if (result.length) merged[date] = result;
+  }
+  return merged;
+}
+
 async function publishToGithub(){
   const token = getGhToken();
   const editorName = getGhEditorName();
   if (!token || !editorName){ openGhSettingsModal(()=> publishToGithub()); return; }
-  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list -- live for everyone who opens the hosted site. Continue?`, 'Publish');
+  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list and setlist -- live for everyone who opens the hosted site. Continue?`, 'Publish');
   if (!ok) return;
   toast('Publishing…');
   try{
@@ -2009,7 +2242,20 @@ async function publishToGithub(){
       return out;
     });
     const newBlock = `${startMarker}\n  const seedSongs = ${JSON.stringify(songsForExport, null, 2)};\n  ${endMarker}`;
-    const newText = currentText.slice(0, startIdx) + newBlock + currentText.slice(endIdx + endMarker.length);
+    let newText = currentText.slice(0, startIdx) + newBlock + currentText.slice(endIdx + endMarker.length);
+
+    const serverSetlists = extractSeedSetlistsFromText(currentText);
+    if (serverSetlists === null){
+      throw new Error('Could not find the setlist data section in the file on GitHub');
+    }
+    const mergedSetlists = mergeSetlistsForPublish(serverSetlists);
+    const slStartMarker = '/* SEED_SETLISTS_START */';
+    const slEndMarker = '/* SEED_SETLISTS_END */';
+    const slStartIdx = newText.indexOf(slStartMarker);
+    const slEndIdx = newText.indexOf(slEndMarker);
+    const slBlock = `${slStartMarker}\n  const seedSetlists = ${JSON.stringify(mergedSetlists, null, 2)};\n  ${slEndMarker}`;
+    newText = newText.slice(0, slStartIdx) + slBlock + newText.slice(slEndIdx + slEndMarker.length);
+
     // committer stays whoever the shared token belongs to (GitHub requires
     // that to match the authenticated account); author is the actual editor,
     // stamped by name only -- a made-up but stable local email keeps commits
@@ -2025,7 +2271,7 @@ async function publishToGithub(){
       method: 'PUT',
       headers: { ...authHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: `Update songs from HopeScore app (${STATE.songs.length} songs) — ${editorName}`,
+        message: `Update songs & setlist from HopeScore app (${STATE.songs.length} songs) — ${editorName}`,
         content: utf8ToBase64(newText),
         sha: fileData.sha,
         branch: GH_REPO_BRANCH,
@@ -2037,8 +2283,14 @@ async function publishToGithub(){
       throw new Error(errBody.message || `GitHub rejected the update (${putRes.status})`);
     }
     setLastPublishedSongs(STATE.songs);
+    setLastPublishedSetlists(mergedSetlists);
+    // Adopt the merged result locally too, so this editor immediately sees
+    // whatever anyone else had already published (e.g. another editor's
+    // songs on the same date's setlist) rather than just their own picks.
+    STATE.setlists = mergedSetlists;
+    saveState();
     toast('Published! Live in about a minute.');
-    if (route.view === 'list') renderListView();
+    render();
   }catch(err){
     toast('Publish failed: ' + err.message);
   }
@@ -2060,6 +2312,7 @@ async function publishToGithub(){
   }
 })();
 </script>
+
 
 </body>
 </html>
