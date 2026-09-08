@@ -157,6 +157,13 @@
   .song-badge.assigned:hover{ opacity:.85; }
   .song-title{ font-family:'Fraunces'; font-weight:600; font-size:15px; }
   .empty-state{ padding:40px 4px; color:var(--muted); text-align:center; font-size:14px; }
+  .unpub-banner{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:13px;
+    background:var(--surface); border:1px solid var(--accent); border-radius:10px;
+    padding:8px 12px; margin-bottom:12px;
+  }
+  .unpub-banner span{ flex:1; min-width:160px; }
+  .unpub-banner button{ height:28px; padding:0 10px; font-size:12.5px; }
   .pill{
     display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px; font-weight:700;
     background:var(--surface); border:1px solid var(--paper-line); color:var(--muted);
@@ -631,6 +638,27 @@ function clearGhEditorName(){ localStorage.removeItem(GH_NAME_KEY); }
 // still browse, build a setlist, and present, just not touch the library.
 function isEditorLoggedIn(){ return !!(getGhToken() && getGhEditorName()); }
 function ghLogout(){ clearGhToken(); clearGhEditorName(); }
+
+// A normalized, order-independent fingerprint of a song list -- used to spot
+// whether an editor's local copy has actually diverged from the currently
+// published version (createdAt/updatedAt excluded since seedState() stamps
+// those fresh every call and they'd make everything look "changed").
+function songsSignature(songs){
+  return JSON.stringify(
+    songs.map(s => ({ id: s.id, title: s.title, keySemitone: s.keySemitone, keyIsMinor: s.keyIsMinor, keyPreferFlat: s.keyPreferFlat, description: s.description, body: s.body }))
+      .sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+}
+// Once a publish succeeds this session, that becomes the "known published"
+// baseline immediately -- otherwise hasUnpublishedChanges() would keep
+// comparing against the stale seedSongs this page happened to load with,
+// and the banner would wrongly stay up right after a successful publish.
+let lastKnownPublishedSongsSig = null;
+function hasUnpublishedChanges(){
+  if (!isEditorLoggedIn()) return false;
+  const baseline = lastKnownPublishedSongsSig || songsSignature(seedState().songs);
+  return songsSignature(STATE.songs) !== baseline;
+}
 
 function loadState(){
   try{
@@ -1328,6 +1356,25 @@ function renderListView(){
     presentBtn.disabled = STATE.setlist.length===0;
   }
 
+  if (editor && hasUnpublishedChanges()){
+    const banner = document.createElement('div');
+    banner.className = 'unpub-banner';
+    banner.innerHTML = `
+      <span>You have unpublished local changes.</span>
+      <button class="iconbtn primary" id="banPublish">Publish now</button>
+      <button class="iconbtn danger" id="banDiscard">Discard</button>`;
+    banner.querySelector('#banPublish').addEventListener('click', publishToGithub);
+    banner.querySelector('#banDiscard').addEventListener('click', async ()=>{
+      const ok = await confirmModal('Discard local changes', "Replace your local song list with the currently published version? This can't be undone.", 'Discard');
+      if (!ok) return;
+      STATE.songs = seedState().songs;
+      saveState();
+      renderListView();
+      toast('Discarded -- back to the published version');
+    });
+    wrap.appendChild(banner);
+  }
+
   const search = document.createElement('input');
   search.className = 'search'; search.placeholder = 'Search song titles…'; search.id = 'searchInput';
   wrap.appendChild(search);
@@ -1959,7 +2006,9 @@ async function publishToGithub(){
       const errBody = await putRes.json().catch(()=>({}));
       throw new Error(errBody.message || `GitHub rejected the update (${putRes.status})`);
     }
+    lastKnownPublishedSongsSig = songsSignature(STATE.songs);
     toast('Published! Live in about a minute.');
+    if (route.view === 'list') renderListView();
   }catch(err){
     toast('Publish failed: ' + err.message);
   }
