@@ -349,36 +349,68 @@ function toNashville(text, baseSemitone){
   }
   return out;
 }
-function makeTransform(mode, baseSemitone, targetSemitone){
-  if (mode === 'nashville') return (t)=>toNashville(t, baseSemitone);
-  const shift = mode === 'transposed' ? (((targetSemitone - baseSemitone) % 12) + 12) % 12 : 0;
-  const refSemitone = mode === 'transposed' ? targetSemitone : baseSemitone;
-  const preferFlat = keyPreference(refSemitone) === 'flat';
+function makeTransform(mode, base, target){
+  if (mode === 'nashville') return (t)=>toNashville(t, base.semitone);
+  const useTarget = mode === 'transposed';
+  const shift = useTarget ? (((target.semitone - base.semitone) % 12) + 12) % 12 : 0;
+  const preferFlat = useTarget ? target.preferFlat : base.preferFlat;
   return (t)=>transposeChord(t, shift, preferFlat);
 }
 
+// The 5 black-key pitch classes have two valid letter names (e.g. C#/Db);
+// which one is "correct" depends on convention, not math, so the key picker
+// offers both and lets the user's choice drive every chord spelled in that
+// key -- rather than silently guessing one via the circle-of-fifths table.
+const AMBIGUOUS_SEMITONES = new Set([1,3,6,8,10]);
+// value = "semitone:isMinor:preferFlat" -- preferFlat is explicit so C# and
+// Db (same pitch) can be told apart; parseKeyValue() falls back to the old
+// circle-of-fifths table for legacy 2-part values that predate this field.
 function keyOptionsHTML(selected){
-  // value = "semitone:isMinor"
-  let html = '';
-  html += '<optgroup label="Major">';
-  for (let s=0;s<12;s++){
-    const name = spellNote(s, keyPreference(s)==='flat');
-    const val = s+':0';
-    html += `<option value="${val}" ${val===selected?'selected':''}>${name}</option>`;
+  function optionsFor(isMinor){
+    let html = '';
+    for (let s=0;s<12;s++){
+      const pfChoices = AMBIGUOUS_SEMITONES.has(s) ? [0,1] : [keyPreference(isMinor?(s+3)%12:s)==='flat' ? 1 : 0];
+      for (const pf of pfChoices){
+        const name = spellNote(s, !!pf) + (isMinor?'m':'');
+        const val = `${s}:${isMinor?1:0}:${pf}`;
+        html += `<option value="${val}" ${val===selected?'selected':''}>${name}</option>`;
+      }
+    }
+    return html;
   }
-  html += '</optgroup><optgroup label="Minor">';
-  for (let s=0;s<12;s++){
-    const relMajor = (s+3)%12;
-    const name = spellNote(s, keyPreference(relMajor)==='flat') + 'm';
-    const val = s+':1';
-    html += `<option value="${val}" ${val===selected?'selected':''}>${name}</option>`;
-  }
-  html += '</optgroup>';
-  return html;
+  return `<optgroup label="Major">${optionsFor(false)}</optgroup><optgroup label="Minor">${optionsFor(true)}</optgroup>`;
 }
-function keyLabel(semitone, isMinor){
-  const relMajor = isMinor ? (semitone+3)%12 : semitone;
-  return spellNote(semitone, keyPreference(relMajor)==='flat') + (isMinor?'m':'');
+function parseKeyValue(val){
+  const parts = String(val==null?'':val).split(':');
+  const semitone = Number(parts[0])||0;
+  const isMinor = Number(parts[1]) === 1;
+  let preferFlat;
+  if (parts.length >= 3 && parts[2] !== ''){
+    preferFlat = Number(parts[2]) === 1;
+  } else {
+    const relMajor = isMinor ? (semitone+3)%12 : semitone;
+    preferFlat = keyPreference(relMajor) === 'flat';
+  }
+  return {semitone, isMinor, preferFlat};
+}
+// A song's own key predates the preferFlat field, so fall back to the old
+// table-based guess for songs saved before this feature existed.
+function songBaseKey(song){
+  const preferFlat = song.keyPreferFlat !== undefined
+    ? !!song.keyPreferFlat
+    : parseKeyValue(`${song.keySemitone}:${song.keyIsMinor?1:0}`).preferFlat;
+  return {semitone: song.keySemitone, preferFlat};
+}
+function songKeyValue(song){
+  const base = songBaseKey(song);
+  return `${song.keySemitone}:${song.keyIsMinor?1:0}:${base.preferFlat?1:0}`;
+}
+function keyLabel(semitone, isMinor, preferFlat){
+  if (preferFlat === undefined){
+    const relMajor = isMinor ? (semitone+3)%12 : semitone;
+    preferFlat = keyPreference(relMajor) === 'flat';
+  }
+  return spellNote(semitone, preferFlat) + (isMinor?'m':'');
 }
 // Splits a title like "We Fall Down by Chris Tomlin" into the song name and
 // the attribution, so lists can show just the name and the song page can
@@ -783,6 +815,20 @@ function setCollapseBlanks(v){
   STATE.settings.collapseBlanks = !!v;
   saveState();
 }
+// Columns / fit-mode defaults for a song opened for the first time this
+// session -- also device-wide and persisted, so a device that was last left
+// on e.g. 1-column Wrap mode (and a chosen font size) opens back into that
+// instead of resetting to 2-column Auto every time.
+function getDefaultColumns(){ return STATE.settings.columns || 2; }
+function setDefaultColumns(v){
+  STATE.settings.columns = v;
+  saveState();
+}
+function getDefaultFitMode(){ return STATE.settings.fitMode || 'auto'; }
+function setDefaultFitMode(v){
+  STATE.settings.fitMode = v;
+  saveState();
+}
 
 /* =========================================================================
    5. Small UI helpers: modal, toast, view router
@@ -824,8 +870,7 @@ function escapeHtml(s){
    ========================================================================= */
 function computeSongRows(song, mode, targetVal){
   const blocks = parseBody(song.body, getCollapseBlanks());
-  const [targetSemitone] = (targetVal||'0:0').split(':').map(Number);
-  const transform = makeTransform(mode, song.keySemitone, targetSemitone);
+  const transform = makeTransform(mode, songBaseKey(song), parseKeyValue(targetVal));
   const rendered = renderBlocks(blocks, transform);
   const rows = [];
   rows.push({cls:'row-title', text: splitTitleArtist(song.title).main});
@@ -1241,7 +1286,7 @@ function renderEditView(songId){
     <div class="editor-grid">
       <div>
         <div class="field"><label>Title</label><input type="text" id="fTitle" value="${existing?escapeHtml(existing.title):''}"></div>
-        <div class="field"><label>Key</label><select id="fKey">${keyOptionsHTML(existing?`${existing.keySemitone}:${existing.keyIsMinor?1:0}`:'9:0')}</select></div>
+        <div class="field"><label>Key</label><select id="fKey">${keyOptionsHTML(existing?songKeyValue(existing):'9:0:0')}</select></div>
         <div class="field"><label>Description (optional)</label><textarea id="fDesc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
         <div class="field">
           <label>Chords &amp; lyrics</label>
@@ -1263,13 +1308,33 @@ function renderEditView(songId){
   const preview = document.getElementById('livePreview');
   const previewCard = preview.parentElement;
 
+  // Mirrors the settings the song view itself would use: whatever this song's
+  // own toolbar was last set to, or the device-wide defaults for a song that
+  // hasn't been opened yet -- so what you see while editing matches what
+  // you'll see after saving, not a fixed 1-column guess.
+  const previewPrefs = (existing && songViewPrefs[existing.id]) || {columns: getDefaultColumns(), fitMode: getDefaultFitMode()};
   function refreshPreview(){
-    const [ks, km] = fKey.value.split(':').map(Number);
-    const song = { title: fTitle.value||'(Untitled)', description: fDesc.value, body: bodyInput.value, keySemitone: ks, keyIsMinor: km };
+    const [ks, km, pf] = fKey.value.split(':').map(Number);
+    const song = { title: fTitle.value||'(Untitled)', description: fDesc.value, body: bodyInput.value, keySemitone: ks, keyIsMinor: km, keyPreferFlat: !!pf };
     const rows = computeSongRows(song, 'original', null);
     requestAnimationFrame(()=>{
       const boxWidth = previewCard.clientWidth - 60;
-      layoutChart(preview, rows, 1, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize()});
+      if (previewPrefs.fitMode === 'wrap'){
+        previewCard.style.height = 'auto';
+        previewCard.style.overflow = 'visible';
+        layoutChart(preview, rows, previewPrefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize()});
+      } else {
+        const top = previewCard.getBoundingClientRect().top;
+        const cardHeight = Math.max(160, window.innerHeight - top - 24);
+        previewCard.style.height = cardHeight + 'px';
+        previewCard.style.overflow = 'hidden';
+        const boxHeight = cardHeight - 52;
+        const result = layoutChart(preview, rows, previewPrefs.columns, boxWidth, boxHeight, {fitMode:'auto'});
+        if (result.scrolled){
+          previewCard.style.height = 'auto';
+          previewCard.style.overflow = 'visible';
+        }
+      }
     });
   }
   [fTitle, fKey, fDesc, bodyInput].forEach(el=> el.addEventListener('input', refreshPreview));
@@ -1279,14 +1344,14 @@ function renderEditView(songId){
   slot.querySelector('#btnSave').addEventListener('click', ()=>{
     const title = fTitle.value.trim();
     if (!title){ toast('Please enter a title'); fTitle.focus(); return; }
-    const [ks, km] = fKey.value.split(':').map(Number);
+    const [ks, km, pf] = fKey.value.split(':').map(Number);
     if (existing){
-      existing.title = title; existing.keySemitone = ks; existing.keyIsMinor = km;
+      existing.title = title; existing.keySemitone = ks; existing.keyIsMinor = km; existing.keyPreferFlat = !!pf;
       existing.description = fDesc.value; existing.body = bodyInput.value; existing.updatedAt = Date.now();
       saveState(); toast('Saved'); go({view:'song', songId: existing.id});
     } else {
       const id = uid();
-      STATE.songs.push({ id, title, keySemitone: ks, keyIsMinor: km, description: fDesc.value, body: bodyInput.value, createdAt: Date.now(), updatedAt: Date.now() });
+      STATE.songs.push({ id, title, keySemitone: ks, keyIsMinor: km, keyPreferFlat: !!pf, description: fDesc.value, body: bodyInput.value, createdAt: Date.now(), updatedAt: Date.now() });
       saveState(); toast('Added'); go({view:'song', songId: id});
     }
   });
@@ -1307,16 +1372,16 @@ function renderSongView(songId){
   const song = STATE.songs.find(s=>s.id===songId);
   if (!song){ go({view:'list'}); return; }
   const prefs = songViewPrefs[songId] || (songViewPrefs[songId] = {
-    mode:'original', target: `${song.keySemitone}:${song.keyIsMinor?1:0}`, columns:2, fitMode:'auto'
+    mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()
   });
   const {main: titleMain, artist: titleArtist} = splitTitleArtist(song.title);
   function keyBadgeText(){
     if (prefs.mode === 'nashville') return '1-7';
     if (prefs.mode === 'transposed'){
-      const [ts, tm] = prefs.target.split(':').map(Number);
-      return keyLabel(ts, !!tm);
+      const t = parseKeyValue(prefs.target);
+      return keyLabel(t.semitone, t.isMinor, t.preferFlat);
     }
-    return keyLabel(song.keySemitone, !!song.keyIsMinor);
+    return keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
   }
 
   const slot = document.getElementById('topbarSongActions');
@@ -1334,7 +1399,7 @@ function renderSongView(songId){
       <button data-fit="auto" class="${prefs.fitMode!=='wrap'?'active':''}" title="Shrink text so nothing wraps">Auto</button>
       <button data-fit="wrap" class="${prefs.fitMode==='wrap'?'active':''}" title="Keep font size fixed; wrap long lines">Wrap</button>
     </div>
-    <div class="seg" id="fontSizeSeg" ${prefs.fitMode!=='wrap'?'hidden':''}>
+    <div class="seg" id="fontSizeSeg" title="Base font size for chords/lyrics -- remembered on this device">
       <button id="fontDec" title="Smaller">A−</button>
       <span class="font-size-label" id="fontSizeLabel">${getFontSize()}px</span>
       <button id="fontInc" title="Larger">A+</button>
@@ -1424,26 +1489,32 @@ function renderSongView(songId){
   document.getElementById('colSeg').addEventListener('click', (e)=>{
     const btn = e.target.closest('button'); if (!btn) return;
     prefs.columns = Number(btn.dataset.col);
+    setDefaultColumns(prefs.columns);
     document.querySelectorAll('#colSeg button').forEach(b=>b.classList.toggle('active', b===btn));
     repaint();
   });
   document.getElementById('fitSeg').addEventListener('click', (e)=>{
     const btn = e.target.closest('button'); if (!btn) return;
     prefs.fitMode = btn.dataset.fit;
+    setDefaultFitMode(prefs.fitMode);
     document.querySelectorAll('#fitSeg button').forEach(b=>b.classList.toggle('active', b===btn));
-    document.getElementById('fontSizeSeg').hidden = prefs.fitMode!=='wrap';
     repaint();
   });
-  document.getElementById('fontDec').addEventListener('click', ()=>{
-    setFontSize(getFontSize()-1);
+  // A-/A+ always work, even in Auto mode: nudging the size is a manual
+  // override, so it switches this song to Wrap (fixed size) to hold it --
+  // otherwise Auto's search would just recompute its own size and undo it.
+  function bumpFontSize(delta){
+    if (prefs.fitMode !== 'wrap'){
+      prefs.fitMode = 'wrap';
+      setDefaultFitMode('wrap');
+      document.querySelectorAll('#fitSeg button').forEach(b=>b.classList.toggle('active', b.dataset.fit==='wrap'));
+    }
+    setFontSize(getFontSize()+delta);
     document.getElementById('fontSizeLabel').textContent = getFontSize()+'px';
     repaint();
-  });
-  document.getElementById('fontInc').addEventListener('click', ()=>{
-    setFontSize(getFontSize()+1);
-    document.getElementById('fontSizeLabel').textContent = getFontSize()+'px';
-    repaint();
-  });
+  }
+  document.getElementById('fontDec').addEventListener('click', ()=> bumpFontSize(-1));
+  document.getElementById('fontInc').addEventListener('click', ()=> bumpFontSize(1));
   document.getElementById('blankSeg').addEventListener('click', (e)=>{
     const btn = e.target.closest('button[data-blank]'); if (!btn) return;
     setCollapseBlanks(btn.dataset.blank === '1');
@@ -1501,7 +1572,7 @@ function paintPresent(){
   if (!song){ closePresent(); return; }
   document.getElementById('presentCounter').textContent = `${presentIdx+1} / ${presentQueue.length}`;
   document.getElementById('presentTitle').textContent = splitTitleArtist(song.title).main;
-  const prefs = songViewPrefs[song.id] || {mode:'original', target:`${song.keySemitone}:${song.keyIsMinor?1:0}`, columns:2, fitMode:'auto'};
+  const prefs = songViewPrefs[song.id] || {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()};
   const rows = computeSongRows(song, prefs.mode, prefs.target);
   const chartEl = document.getElementById('presentChart');
   requestAnimationFrame(()=>{
