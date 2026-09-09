@@ -170,10 +170,51 @@
   }
 
   /* ---------- home (weekly setlist + library, one page) view ---------- */
-  .date-select{
-    height:36px; padding:0 8px; border-radius:8px; border:1px solid var(--paper-line);
-    background:var(--surface); color:var(--ink); font-size:13px; font-weight:600; max-width:150px;
+  .date-control{ position:relative; }
+  .date-btn{
+    height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--paper-line);
+    background:var(--surface); color:var(--ink); font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;
   }
+  .date-btn:hover{ border-color:var(--focus); }
+  /* position:fixed, not absolute -- .topbar-scroll sets overflow-x:auto,
+     which per spec forces its overflow-y to auto too (a non-"visible" value
+     on one axis converts "visible" on the other to "auto"), silently
+     clipping anything position:absolute that overflows it vertically.
+     Fixed positioning escapes that; JS sets top/left from the button's
+     rect when opening (see renderHomeView). */
+  .calendar-popover{
+    position:fixed; z-index:150;
+    width:230px; background:var(--surface); border:1px solid var(--paper-line); border-radius:12px;
+    box-shadow:0 6px 20px rgba(0,0,0,.15); padding:10px;
+  }
+  .calendar-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+  .calendar-header span{ font-family:'Fraunces'; font-weight:700; font-size:13px; }
+  .calendar-header button{
+    width:26px; height:26px; border-radius:6px; border:none; background:none; color:var(--ink);
+    font-size:15px; cursor:pointer;
+  }
+  .calendar-header button:hover{ background:var(--paper); }
+  .calendar-weekdays{ display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:10px; color:var(--muted); margin-bottom:2px; }
+  .calendar-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
+  .calendar-day{
+    position:relative; aspect-ratio:1; display:flex; align-items:center; justify-content:center;
+    border:none; background:none; border-radius:8px; font-size:12.5px; color:var(--ink); cursor:pointer;
+    font-variant-numeric:tabular-nums;
+  }
+  .calendar-day:hover{ background:var(--paper); }
+  .calendar-day.empty{ visibility:hidden; cursor:default; }
+  .calendar-day.today{ border:1.5px solid var(--accent); font-weight:700; }
+  .calendar-day.selected{ background:var(--accent); color:var(--surface); font-weight:700; }
+  .calendar-day.has-setlist::after{
+    content:''; position:absolute; bottom:2px; left:50%; transform:translateX(-50%);
+    width:4px; height:4px; border-radius:50%; background:var(--accent);
+  }
+  .calendar-day.selected.has-setlist::after{ background:var(--surface); }
+  .calendar-today-btn{
+    width:100%; margin-top:8px; padding:6px; border-radius:8px; border:1px solid var(--paper-line);
+    background:var(--surface); color:var(--ink); font-size:12px; cursor:pointer;
+  }
+  .calendar-today-btn:hover{ border-color:var(--focus); }
   .setlist-row{ grid-template-columns:30px 1fr auto; }
   .setlist-row.editable{ grid-template-columns:30px 1fr auto auto; }
   .setlist-row .pill{ flex-shrink:0; }
@@ -518,16 +559,34 @@ function addWeeksISO(iso, weeks){
 function formatDateHeading(iso){
   return isoDateParts(iso).toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
 }
-// The date dropdown's option list: a rolling window around "this week" (a
-// month back, two months ahead covers most planning-ahead and looking-back
-// use) plus whatever date is actually selected, in case it falls outside
-// that window (an old or far-future setlist someone linked directly to).
-function dateSelectOptions(selectedDate){
-  const base = nearestSundayISO();
-  const dates = new Set();
-  for (let w=-4; w<=8; w++) dates.add(addWeeksISO(base, w));
-  dates.add(selectedDate);
-  return Array.from(dates).sort();
+function todayISO(){ return toISODate(new Date()); }
+function isoMonthStart(iso){
+  const d = isoDateParts(iso);
+  return toISODate(new Date(d.getFullYear(), d.getMonth(), 1));
+}
+function addMonthsISO(iso, months){
+  const d = isoDateParts(iso);
+  return toISODate(new Date(d.getFullYear(), d.getMonth()+months, 1));
+}
+// Every date that actually has a setlist someone's built (even a date whose
+// setlist was later emptied back out doesn't count) -- used to dot those
+// days on the calendar popover.
+function datesWithSetlists(){
+  return new Set(Object.keys(STATE.setlists||{}).filter(d => (STATE.setlists[d]||[]).length > 0));
+}
+// One calendar-grid's worth of cells for the month containing monthStartISO:
+// null for the leading blanks before day 1 (so day 1 lands in the right
+// weekday column), then one ISO date per day of the month.
+function buildCalendarDays(monthStartISO){
+  const first = isoDateParts(monthStartISO);
+  const startWeekday = first.getDay();
+  const daysInMonth = new Date(first.getFullYear(), first.getMonth()+1, 0).getDate();
+  const cells = [];
+  for (let i=0; i<startWeekday; i++) cells.push(null);
+  for (let day=1; day<=daysInMonth; day++){
+    cells.push(toISODate(new Date(first.getFullYear(), first.getMonth(), day)));
+  }
+  return cells;
 }
 // Splits a title like "We Fall Down by Chris Tomlin" into the song name and
 // the attribution, so lists can show just the name and the song page can
@@ -1522,12 +1581,20 @@ function renderHomeView(date){
   const slot = document.getElementById('topbarHomeActions');
   slot.innerHTML = `
     <button class="iconbtn" id="datePrev" title="Previous week">‹</button>
-    <select id="dateSelect" class="date-select" title="Pick a date">
-      ${dateSelectOptions(date).map(d=>`<option value="${d}" ${d===date?'selected':''}>${escapeHtml(formatDateHeading(d))}</option>`).join('')}
-      <option value="__custom__">Other date…</option>
-    </select>
+    <div class="date-control">
+      <button class="date-btn" id="dateBtn" title="Pick a date">${escapeHtml(formatDateHeading(date))}</button>
+      <div class="calendar-popover" id="calendarPopover" hidden>
+        <div class="calendar-header">
+          <button id="calMonthPrev" title="Previous month">‹</button>
+          <span id="calMonthLabel"></span>
+          <button id="calMonthNext" title="Next month">›</button>
+        </div>
+        <div class="calendar-weekdays"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div>
+        <div class="calendar-grid" id="calendarGrid"></div>
+        <button class="calendar-today-btn" id="calToday">This week</button>
+      </div>
+    </div>
     <button class="iconbtn" id="dateNext" title="Next week">›</button>
-    <input type="date" id="datePicker" value="${date}" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none;">
     <div class="topbar-divider"></div>
     <button class="iconbtn primary" id="btnPresentHome" title="Present fullscreen">▶</button>
     <button class="iconbtn" id="btnCopySetlist" title="Copy setlist as text">📋</button>
@@ -1667,20 +1734,61 @@ function renderHomeView(date){
   }
   slot.querySelector('#datePrev').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,-1)}));
   slot.querySelector('#dateNext').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,1)}));
-  const dateSelect = slot.querySelector('#dateSelect');
-  const datePicker = slot.querySelector('#datePicker');
-  dateSelect.addEventListener('change', (e)=>{
-    if (e.target.value === '__custom__'){
-      if (datePicker.showPicker) datePicker.showPicker(); else datePicker.click();
-      e.target.value = date;
-      return;
+
+  // Calendar popover: shows today and every date with a saved setlist
+  // marked, so an editor or viewer can see at a glance which Sundays (or
+  // any other date) already have something planned.
+  let calMonth = isoMonthStart(date);
+  const dateBtn = slot.querySelector('#dateBtn');
+  const popover = slot.querySelector('#calendarPopover');
+  const calGrid = slot.querySelector('#calendarGrid');
+  const calLabel = slot.querySelector('#calMonthLabel');
+  function paintCalendar(){
+    calLabel.textContent = isoDateParts(calMonth).toLocaleDateString('en-US', { month:'long', year:'numeric' });
+    const setlistDates = datesWithSetlists();
+    const today = todayISO();
+    calGrid.innerHTML = '';
+    for (const iso of buildCalendarDays(calMonth)){
+      const cell = document.createElement('button');
+      if (iso === null){
+        cell.className = 'calendar-day empty';
+      } else {
+        cell.className = 'calendar-day'
+          + (iso===today ? ' today' : '')
+          + (iso===date ? ' selected' : '')
+          + (setlistDates.has(iso) ? ' has-setlist' : '');
+        cell.textContent = String(Number(iso.slice(8,10)));
+        cell.title = formatDateHeading(iso) + (setlistDates.has(iso) ? ' -- has a setlist' : '');
+        cell.addEventListener('click', ()=>{ popover.hidden = true; go({view:'home', date: iso}); });
+      }
+      calGrid.appendChild(cell);
     }
-    go({view:'home', date: e.target.value});
+  }
+  paintCalendar();
+  dateBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    if (!popover.hidden){ popover.hidden = true; return; }
+    const r = dateBtn.getBoundingClientRect();
+    const left = Math.min(Math.max(8, r.left + r.width/2 - 115), window.innerWidth - 238);
+    popover.style.top = (r.bottom + 6) + 'px';
+    popover.style.left = left + 'px';
+    popover.hidden = false;
   });
-  datePicker.addEventListener('change', (e)=>{ if (e.target.value) go({view:'home', date: e.target.value}); });
+  slot.querySelector('#calMonthPrev').addEventListener('click', ()=>{ calMonth = addMonthsISO(calMonth,-1); paintCalendar(); });
+  slot.querySelector('#calMonthNext').addEventListener('click', ()=>{ calMonth = addMonthsISO(calMonth,1); paintCalendar(); });
+  slot.querySelector('#calToday').addEventListener('click', ()=>{ popover.hidden = true; go({view:'home', date: nearestSundayISO()}); });
 
   viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
 }
+// Closes any open calendar popover on an outside click -- registered once
+// at the top level (not inside renderHomeView) so repeated re-renders don't
+// pile up duplicate document-level listeners.
+document.addEventListener('click', (e)=>{
+  const openPopover = document.querySelector('.calendar-popover:not([hidden])');
+  if (openPopover && !openPopover.parentElement.contains(e.target)){
+    openPopover.hidden = true;
+  }
+});
 
 // Plain-text rendering for sharing a setlist in a group chat: date, then one
 // "n. Title - Key" line per song.
