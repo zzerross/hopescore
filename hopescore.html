@@ -1114,13 +1114,7 @@ function seedState(){
 ];
   /* SEED_SONGS_END */
   /* SEED_SETLISTS_START */
-  const seedSetlists = {
-  "2026-09-13": [
-    "seed1",
-    "seed2",
-    "seed3"
-  ]
-};
+  const seedSetlists = {};
   /* SEED_SETLISTS_END */
   const now = Date.now();
   for (const s of seedSongs){ s.createdAt = now; s.updatedAt = now; }
