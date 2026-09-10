@@ -1613,7 +1613,7 @@ function renderHomeView(date){
     <button class="iconbtn" id="dateNext" title="Next week">›</button>
     <div class="topbar-divider"></div>
     <button class="iconbtn primary" id="btnPresentHome" title="Present fullscreen">▶</button>
-    <button class="iconbtn" id="btnShareSetlist" title="Share this setlist">🔗</button>
+    <button class="iconbtn" id="btnShareSetlist" title="Share this setlist"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
     ${editor ? `
     <button class="iconbtn primary" id="btnAdd" title="New song${pending.added? ` -- ${pending.added} added locally, not yet published`:''}">+${pending.added? `<span class="btn-badge">${pending.added}</span>` : ''}</button>
     <button class="iconbtn" id="btnPublish" title="Publish the current song list and setlist to GitHub">📤</button>
