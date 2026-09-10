@@ -1817,18 +1817,25 @@ async function shareSetlist(date, songs){
   if (songs.length===0) return;
   const title = `${formatDateHeading(date)} setlist`;
   const lines = songs.map((s,i)=>`${i+1}. ${splitTitleArtist(s.title).main} - ${songKeyLabel(s)}`);
-  const text = lines.join('\n');
   const url = setlistShareUrl(date);
+  const combined = `${title}\n${lines.join('\n')}\n${url}`;
+  // Passing title/text/url as separate fields sounds right, but plenty of
+  // real share targets (KakaoTalk observed directly) re-stitch those three
+  // fields together themselves when composing the message and don't
+  // reliably keep the line breaks between them -- title and line 1 end up
+  // joined with " - ", the url tacked onto the last line with a space, etc.
+  // Passing everything pre-joined as a single `text` string is what
+  // actually survives intact end to end, so `title`/`url` are left out on
+  // purpose here.
   if (navigator.share){
     try{
-      await navigator.share({ title, text, url });
+      await navigator.share({ text: combined });
       return;
     }catch(e){
       if (e && e.name === 'AbortError') return; // user closed the share sheet
       // fall through to the clipboard fallback below
     }
   }
-  const combined = `${title}\n${text}\n${url}`;
   try{
     await navigator.clipboard.writeText(combined);
     toast('Copied to clipboard');
