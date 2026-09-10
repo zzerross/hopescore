@@ -560,6 +560,22 @@ function formatDateHeading(iso){
   return isoDateParts(iso).toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
 }
 function todayISO(){ return toISODate(new Date()); }
+// Lets a shared link ("?date=2026-09-13") open straight to that date's
+// setlist instead of always landing on the current week. Only consulted
+// once, at initial route setup -- normal in-app navigation doesn't touch
+// the address bar.
+function dateFromUrl(){
+  try{
+    const v = new URLSearchParams(location.search).get('date');
+    return /^\d{4}-\d{2}-\d{2}$/.test(v||'') ? v : null;
+  }catch(e){ return null; }
+}
+// The URL a share/link action hands out for a given date's setlist --
+// origin+path only (this app has no other routing reflected in the address
+// bar), plus the date so a fresh open of the link lands directly on it.
+function setlistShareUrl(date){
+  return `${location.origin}${location.pathname}?date=${date}`;
+}
 function isoMonthStart(iso){
   const d = isoDateParts(iso);
   return toISODate(new Date(d.getFullYear(), d.getMonth(), 1));
@@ -1512,7 +1528,7 @@ const viewRoot = document.getElementById('viewRoot');
 // the service itself, want today's/this week's setlist front and center.
 // The full song library lives further down the same page (see
 // renderHomeView()) rather than behind a separate view/tab.
-let route = {view:'home', date: nearestSundayISO()};
+let route = {view:'home', date: dateFromUrl() || nearestSundayISO()};
 let activeSongRepaint = null;
 
 function go(r){ route = r; render(); window.scrollTo(0,0); }
@@ -1597,7 +1613,7 @@ function renderHomeView(date){
     <button class="iconbtn" id="dateNext" title="Next week">›</button>
     <div class="topbar-divider"></div>
     <button class="iconbtn primary" id="btnPresentHome" title="Present fullscreen">▶</button>
-    <button class="iconbtn" id="btnCopySetlist" title="Copy setlist as text">📋</button>
+    <button class="iconbtn" id="btnShareSetlist" title="Share this setlist">🔗</button>
     ${editor ? `
     <button class="iconbtn primary" id="btnAdd" title="New song${pending.added? ` -- ${pending.added} added locally, not yet published`:''}">+${pending.added? `<span class="btn-badge">${pending.added}</span>` : ''}</button>
     <button class="iconbtn" id="btnPublish" title="Publish the current song list and setlist to GitHub">📤</button>
@@ -1627,13 +1643,13 @@ function renderHomeView(date){
   wrap.appendChild(libraryEl);
 
   const btnPresentHome = slot.querySelector('#btnPresentHome');
-  const btnCopySetlist = slot.querySelector('#btnCopySetlist');
+  const btnShareSetlist = slot.querySelector('#btnShareSetlist');
 
   function paintSetlist(){
     const ids = STATE.setlists[date] || [];
     const songs = ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
     btnPresentHome.disabled = songs.length===0;
-    btnCopySetlist.disabled = songs.length===0;
+    btnShareSetlist.disabled = songs.length===0;
     setlistEl.innerHTML = '';
     if (songs.length===0){
       setlistEl.innerHTML = `<div class="empty-state">${editor ? 'No songs in this setlist yet -- add some from the list below.' : 'No setlist for this date yet.'}</div>`;
@@ -1716,9 +1732,9 @@ function renderHomeView(date){
   search.addEventListener('input', ()=> paintLibrary(search.value));
 
   btnPresentHome.addEventListener('click', ()=> openPresent(STATE.setlists[date] || [], 0));
-  btnCopySetlist.addEventListener('click', ()=>{
+  btnShareSetlist.addEventListener('click', ()=>{
     const ids = STATE.setlists[date] || [];
-    copySetlistText(date, ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean));
+    shareSetlist(date, ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean));
   });
   if (editor){
     slot.querySelector('#btnAdd').addEventListener('click', ()=> go({view:'edit', songId:null, date}));
@@ -1790,14 +1806,31 @@ document.addEventListener('click', (e)=>{
   }
 });
 
-// Plain-text rendering for sharing a setlist in a group chat: date, then one
-// "n. Title - Key" line per song.
-async function copySetlistText(date, songs){
+// Shares a setlist -- date, one "n. Title - Key" line per song, and a link
+// straight back to this date (see setlistShareUrl()/dateFromUrl()) so
+// whoever gets it can just tap it instead of hunting for the right date
+// themselves. Prefers the OS share sheet (lets you pick KakaoTalk, a text
+// message, whatever) and falls back to copying text+link to the clipboard
+// where the Web Share API isn't available (most desktop browsers, some
+// older WebViews).
+async function shareSetlist(date, songs){
   if (songs.length===0) return;
-  const lines = [`${formatDateHeading(date)} setlist`, ...songs.map((s,i)=>`${i+1}. ${splitTitleArtist(s.title).main} - ${songKeyLabel(s)}`)];
+  const title = `${formatDateHeading(date)} setlist`;
+  const lines = songs.map((s,i)=>`${i+1}. ${splitTitleArtist(s.title).main} - ${songKeyLabel(s)}`);
   const text = lines.join('\n');
+  const url = setlistShareUrl(date);
+  if (navigator.share){
+    try{
+      await navigator.share({ title, text, url });
+      return;
+    }catch(e){
+      if (e && e.name === 'AbortError') return; // user closed the share sheet
+      // fall through to the clipboard fallback below
+    }
+  }
+  const combined = `${title}\n${text}\n${url}`;
   try{
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(combined);
     toast('Copied to clipboard');
     return;
   }catch(e){}
@@ -1805,13 +1838,13 @@ async function copySetlistText(date, songs){
   // fall back to a hidden textarea + execCommand.
   try{
     const ta = document.createElement('textarea');
-    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    ta.value = combined; ta.style.position='fixed'; ta.style.opacity='0';
     document.body.appendChild(ta); ta.focus(); ta.select();
     document.execCommand('copy');
     document.body.removeChild(ta);
     toast('Copied to clipboard');
   }catch(e){
-    toast("Couldn't copy -- select and copy manually");
+    toast("Couldn't share -- select and copy manually");
   }
 }
 

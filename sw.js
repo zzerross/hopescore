@@ -38,6 +38,17 @@ self.addEventListener('fetch', (event) => {
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return response;
       })
-      .catch(() => caches.match(event.request).then((cached) => cached || Response.error()))
+      .catch(() => caches.match(event.request).then((cached) => {
+        if (cached) return cached;
+        // A shared setlist link carries a "?date=..." query string, which
+        // doesn't change what page is served -- if this exact URL was never
+        // cached (first-ever open of a shared link, offline), fall back to
+        // the cached bare page instead of failing outright. The address bar
+        // keeps the real URL, so the page's own JS still reads "?date=..."
+        // from it correctly once this fallback response loads.
+        const bare = new URL(event.request.url);
+        bare.search = '';
+        return caches.match(bare.toString()).then((c) => c || Response.error());
+      }))
   );
 });
