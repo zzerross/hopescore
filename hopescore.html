@@ -814,6 +814,34 @@ function renderBlocks(blocks, transformFn){
     return b;
   });
 }
+// Turns parsed blocks back into plain chart text -- the same shape
+// parseBody() accepts -- applying transformFn to every chord token along
+// the way. Used to actually rewrite a chart's chords (see
+// transposeBodyText()), as opposed to renderBlocks(), which only produces
+// rows for on-screen display.
+function blocksToText(blocks, transformFn){
+  const lines = [];
+  for (const b of blocks){
+    if (b.type === 'blank') lines.push('');
+    else if (b.type === 'section') lines.push(b.text);
+    else if (b.type === 'lyricOnly') lines.push(b.text);
+    else if (b.type === 'pair'){
+      const {chordLine, lyricLine} = realignPair(b.chordTokens, b.lyric, transformFn);
+      lines.push(chordLine, lyricLine);
+    } else if (b.type === 'chordOnly'){
+      lines.push(realignChordOnly(b.chordTokens, transformFn));
+    }
+  }
+  return lines.join('\n');
+}
+// Rewrites every chord in a chart's raw text by shift semitones -- used by
+// the editor's "Transpose chart" action, which changes the actual chord
+// letters (as opposed to just changing the Key field, which only relabels
+// what key the existing letters are understood to be in).
+function transposeBodyText(bodyText, shift, preferFlat){
+  const blocks = parseBody(bodyText, false);
+  return blocksToText(blocks, (t) => transposeChord(t, shift, preferFlat));
+}
 
 /* =========================================================================
    4. Storage
@@ -1949,7 +1977,14 @@ function renderEditView(songId){
     <div class="editor-grid">
       <div>
         <div class="field"><label>Title</label><input type="text" id="fTitle" value="${existing?escapeHtml(existing.title):''}"></div>
-        <div class="field"><label>Key</label><select id="fKey">${keyOptionsHTML(existing?songKeyValue(existing):'9:0:0')}</select></div>
+        <div class="field">
+          <label>Key</label>
+          <div style="display:flex; gap:8px;">
+            <select id="fKey" style="flex:1;">${keyOptionsHTML(existing?songKeyValue(existing):'9:0:0')}</select>
+            <button type="button" class="iconbtn" id="btnTransposeChart" title="Rewrite the chords below to match the key selected above" style="white-space:nowrap;">Transpose chart</button>
+          </div>
+          <div class="hint">Changing the key above only relabels it -- the chord letters below stay as typed. Use "Transpose chart" to actually rewrite them to match.</div>
+        </div>
         <div class="field"><label>Description (optional)</label><textarea id="fDesc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
         <div class="field">
           <label>Chords &amp; lyrics</label>
@@ -2002,6 +2037,29 @@ function renderEditView(songId){
   }
   [fTitle, fKey, fDesc, bodyInput].forEach(el=> el.addEventListener('input', refreshPreview));
   refreshPreview();
+
+  // Tracks whatever key the chart's chord letters currently actually match --
+  // starts as the song's stored key (or the default for a new song), and
+  // advances after each successful transpose so re-targeting a second time
+  // shifts from there instead of double-applying the first shift.
+  let chartKeyValue = existing ? songKeyValue(existing) : fKey.value;
+  document.getElementById('btnTransposeChart').addEventListener('click', async ()=>{
+    if (fKey.value === chartKeyValue){
+      toast('Pick a different key first');
+      return;
+    }
+    const from = parseKeyValue(chartKeyValue);
+    const to = parseKeyValue(fKey.value);
+    const fromLabel = keyLabel(from.semitone, from.isMinor, from.preferFlat);
+    const toLabel = keyLabel(to.semitone, to.isMinor, to.preferFlat);
+    const ok = await confirmModal('Transpose chart', `Rewrite every chord below from ${fromLabel} to ${toLabel}? This changes the chord letters themselves, not just the key label.`, 'Transpose');
+    if (!ok) return;
+    const shift = ((to.semitone - from.semitone) % 12 + 12) % 12;
+    bodyInput.value = transposeBodyText(bodyInput.value, shift, to.preferFlat);
+    chartKeyValue = fKey.value;
+    refreshPreview();
+    toast(`Transposed to ${toLabel}`);
+  });
 
   slot.querySelector('#btnCancel').addEventListener('click', ()=> go(existing
     ? {view:'song', songId: existing.id, date: cameFromDate}
