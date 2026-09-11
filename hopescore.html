@@ -429,14 +429,24 @@ function repeatedChordUnit(text){
   }
   return null;
 }
+// Some charts mark a passing/optional chord in parentheses, e.g. "(Edim)".
+// Recognized/transposed the same as the bare chord inside, parens kept on
+// display so the "this one's optional" meaning survives.
+function unwrapParens(text){
+  return (text.length > 2 && text[0]==='(' && text[text.length-1]===')') ? text.slice(1,-1) : null;
+}
 function isChordToken(text){
   if (baseChordToken(text)) return true;
   if (SPECIAL_TOKENS.has(text)) return true;
   if (REPEAT_COUNT_RE.test(text)) return true;
-  return !!repeatedChordUnit(text);
+  if (repeatedChordUnit(text)) return true;
+  const inner = unwrapParens(text);
+  return inner !== null && isChordToken(inner);
 }
 
 function transposeChord(text, shift, preferFlat){
+  const inner = unwrapParens(text);
+  if (inner !== null) return '(' + transposeChord(inner, shift, preferFlat) + ')';
   const rep = repeatedChordUnit(text);
   if (rep) return transposeChord(rep.unit, shift, preferFlat).repeat(rep.count);
   const m = text.match(CHORD_RE);
@@ -448,6 +458,8 @@ function transposeChord(text, shift, preferFlat){
 }
 const NNS_TABLE = ['1','b2','2','b3','3','4','#4','5','b6','6','b7','7'];
 function toNashville(text, baseSemitone){
+  const inner = unwrapParens(text);
+  if (inner !== null) return '(' + toNashville(inner, baseSemitone) + ')';
   const rep = repeatedChordUnit(text);
   if (rep) return toNashville(rep.unit, baseSemitone).repeat(rep.count);
   const m = text.match(CHORD_RE);
@@ -623,14 +635,67 @@ function splitTitleArtist(title){
 function tokenizeLine(line){
   return [...line.matchAll(/\S+/g)].map(m=>({text:m[0], col:m.index}));
 }
+// Some chord-chart sources (hymnal.net's "Default Arrangement" pages, among
+// others) substitute "." for every space so runs of spaces survive
+// copy-paste as plain text (a browser normally collapses literal whitespace
+// runs when you copy rendered HTML). Recognized as 2+ "word.word" runs on a
+// line -- real lyrics essentially never have that many no-space
+// abbreviations in one line. Doesn't touch a line-ending period (nothing
+// follows it, so the lookahead fails) or a period already followed by a
+// space -- that's the separate pattern these same sources use on chord
+// lines ("G. C. D7. G"), handled by normalizeChordToken() below instead.
+function despaceFillerDots(line){
+  const fillerCount = (line.match(/\.(?=\S)/g) || []).length;
+  return fillerCount >= 2 ? line.replace(/\.(?=\S)/g, ' ') : line;
+}
+// A token counts as a chord either outright, or with one trailing "."
+// removed -- the same filler-dot sources above tend to leave a trailing "."
+// on every chord too, since the whole line was built by inserting a filler
+// dot after each token.
+function normalizeChordToken(text){
+  if (isChordToken(text)) return text;
+  if (text.length > 1 && text.endsWith('.')){
+    const stripped = text.slice(0, -1);
+    if (isChordToken(stripped)) return stripped;
+  }
+  return text;
+}
+// Splits one whitespace-delimited token into several chord tokens on
+// internal "."s. Filler-dot sources normally leave a space after each
+// chord's dot too ("A7. D"), but not always -- when a dot lands with no
+// surrounding space at all, two chords end up fused into one token
+// ("A7.D" for "A7 D"). Returns the split pieces (with column offsets
+// within the original token) only if every piece is a valid chord;
+// otherwise null, so the caller falls back to treating it as one token
+// (a real chord can itself contain no "." at all, and a plain trailing-dot
+// token like "Edim/C#." is handled separately by normalizeChordToken).
+function splitFusedChordToken(token, baseCol){
+  if (!token.includes('.')) return null;
+  const parts = token.split('.');
+  if (parts.some(p => p === '')) return null;
+  const normalized = parts.map(normalizeChordToken);
+  if (!normalized.every(isChordToken)) return null;
+  const result = [];
+  let offset = 0;
+  for (let i=0; i<parts.length; i++){
+    result.push({ text: normalized[i], col: baseCol + offset });
+    offset += parts[i].length + 1; // +1 for the "." that separated it
+  }
+  return result;
+}
 function lineIsChordLine(line){
   const toks = tokenizeLine(line);
-  return toks.length>0 && toks.every(t=>isChordToken(t.text));
+  return toks.length>0 && toks.every(t=>
+    isChordToken(normalizeChordToken(t.text)) || !!splitFusedChordToken(t.text, t.col));
 }
 // Recognizes common part/section names on their own line -- "Verse 1",
 // "[Chorus]", "Pre-Chorus:", "Bridge x2" -- with no special markup needed.
 // A leading "##" still works too, for a custom name outside this vocabulary.
-const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)\s*(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\s*:?\s*\]?$/i;
+// The [\s.]* (rather than \s*) between the word and the number tolerates
+// "VERSE.1" -- some chord-chart sources use "." as a space filler (see
+// despaceFillerDots) even on a section label by itself, which has only one
+// such dot and so doesn't clear that heuristic's own 2+ threshold.
+const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\s*:?\s*\]?$/i;
 function detectSectionLabel(trimmed){
   const m = trimmed.match(SECTION_WORD_RE);
   if (!m) return null;
@@ -643,7 +708,7 @@ function detectSectionLabel(trimmed){
 }
 function parseBody(bodyText, collapseBlanks){
   if (collapseBlanks === undefined) collapseBlanks = true;
-  const rawLines = (bodyText||'').replace(/\r\n/g,'\n').split('\n');
+  const rawLines = (bodyText||'').replace(/\r\n/g,'\n').split('\n').map(despaceFillerDots);
   const blocks = [];
   let i = 0;
   while (i < rawLines.length){
@@ -667,7 +732,8 @@ function parseBody(bodyText, collapseBlanks){
       i++; continue;
     }
     if (lineIsChordLine(line)){
-      const tokens = tokenizeLine(line);
+      const tokens = tokenizeLine(line).flatMap(t =>
+        splitFusedChordToken(t.text, t.col) || [{ ...t, text: normalizeChordToken(t.text) }]);
       const next = rawLines[i+1];
       let nextIsChord = false, nextIsSection = false, nextIsBlank = false;
       if (next !== undefined){
