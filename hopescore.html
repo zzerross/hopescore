@@ -246,6 +246,24 @@
   .field-row{ display:flex; gap:10px; }
   .field-row > *{ flex:1; }
   #bodyInput{ min-height:340px; line-height:1.55; font-size:14px; }
+  /* A backdrop <pre> sits behind #bodyInput, mirroring its text with every
+     space swapped for a faint middle dot -- the textarea itself keeps its
+     real text fully opaque but goes transparent everywhere else, so the
+     dots show through exactly where (and only where) there's a space,
+     making it easy to see how many spaces separate a chord from the next
+     one, or which syllable a chord actually sits above. Box metrics
+     (padding/border/font/line-height/box-sizing) must match #bodyInput
+     exactly or the dots drift out of alignment with the real text. */
+  .body-input-wrap{ position:relative; }
+  .body-input-backdrop{
+    position:absolute; top:0; left:0; width:100%; min-height:340px;
+    margin:0; padding:10px 12px; border:1px solid var(--paper-line); border-radius:9px;
+    background:var(--surface); color:transparent; box-sizing:border-box;
+    font-size:14px; line-height:1.55; white-space:pre-wrap; word-break:break-word;
+    overflow:hidden; pointer-events:none;
+  }
+  .body-input-backdrop .ws{ color:var(--muted); opacity:.55; }
+  #bodyInput{ position:relative; background:transparent; border-color:transparent; box-sizing:border-box; }
   .preview-panel{ min-height:340px; }
   .preview-label{ font-size:12.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-bottom:12px; }
   .hint{ color:var(--muted); font-size:12px; margin-top:6px; line-height:1.5; }
@@ -2057,8 +2075,11 @@ function renderEditView(songId){
         <div class="field"><label>Description (optional)</label><textarea id="fDesc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
         <div class="field">
           <label>Chords &amp; lyrics</label>
-          <textarea id="bodyInput" class="mono" spellcheck="false">${existing?escapeHtml(existing.body):''}</textarea>
-          <div class="hint">Part names (Verse, Chorus, Bridge, Intro, Pre-Chorus, Tag…) are recognized automatically on their own line — no special marks needed. For a custom name, start the line with ##. A chord-only line followed directly by a lyric line is paired and aligned automatically. A progression with no lyrics (like an intro) can be left as a chord line on its own.</div>
+          <div class="body-input-wrap">
+            <pre class="body-input-backdrop mono" id="bodyInputBackdrop" aria-hidden="true"></pre>
+            <textarea id="bodyInput" class="mono" spellcheck="false">${existing?escapeHtml(existing.body):''}</textarea>
+          </div>
+          <div class="hint">Part names (Verse, Chorus, Bridge, Intro, Pre-Chorus, Tag…) are recognized automatically on their own line — no special marks needed. For a custom name, start the line with ##. A chord-only line followed directly by a lyric line is paired and aligned automatically. A progression with no lyrics (like an intro) can be left as a chord line on its own. Spaces show as faint dots to help line up chords over the right syllable.</div>
         </div>
       </div>
       <div class="preview-panel">
@@ -2072,8 +2093,19 @@ function renderEditView(songId){
   const fKey = document.getElementById('fKey');
   const fDesc = document.getElementById('fDesc');
   const bodyInput = document.getElementById('bodyInput');
+  const bodyBackdrop = document.getElementById('bodyInputBackdrop');
   const preview = document.getElementById('livePreview');
   const previewCard = preview.parentElement;
+
+  function refreshWhitespaceBackdrop(){
+    bodyBackdrop.innerHTML = escapeHtml(bodyInput.value).replace(/ /g, '<span class="ws">·</span>');
+  }
+  function syncBackdropHeight(){ bodyBackdrop.style.height = bodyInput.offsetHeight + 'px'; }
+  refreshWhitespaceBackdrop();
+  syncBackdropHeight();
+  bodyInput.addEventListener('input', refreshWhitespaceBackdrop);
+  bodyInput.addEventListener('scroll', ()=>{ bodyBackdrop.scrollTop = bodyInput.scrollTop; bodyBackdrop.scrollLeft = bodyInput.scrollLeft; });
+  new ResizeObserver(syncBackdropHeight).observe(bodyInput);
 
   // Mirrors the settings the song view itself would use: whatever this song's
   // own toolbar was last set to, or the device-wide defaults for a song that
@@ -2127,6 +2159,7 @@ function renderEditView(songId){
     bodyInput.value = transposeBodyText(bodyInput.value, shift, to.preferFlat);
     chartKeyValue = fKey.value;
     refreshPreview();
+    refreshWhitespaceBackdrop();
     toast(`Transposed to ${toLabel}`);
   });
 
