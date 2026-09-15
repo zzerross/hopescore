@@ -295,6 +295,21 @@
     display:none; flex-direction:column;
   }
   #present.open{ display:flex; }
+  /* Prompter mode always renders black-on-white-text regardless of the
+     device's own light/dark theme -- it's a stage/congregation-facing
+     screen, not meant to follow whatever theme the operator's device
+     happens to be in. Only row-lyric and row-section actually appear here
+     (paintPresent() filters chord/title/description rows out), so those
+     are the only row classes overridden. */
+  #present.prompter{ background:#000; color:#fff; }
+  #present.prompter .present-counter{ color:#666; }
+  #present.prompter .present-title{ color:#eee; }
+  #present.prompter .seg button{ background:#111; color:#ccc; border-color:#333; }
+  #present.prompter .seg button.active{ background:#fff; color:#000; }
+  #present.prompter #presentClose{ background:#111; color:#eee; border-color:#333; }
+  #present.prompter .row-section{ color:#888; font-size:.65em; text-transform:uppercase; letter-spacing:.06em; }
+  #present.prompter .row-lyric{ color:#fff; font-weight:600; }
+  #present.prompter .tap-chevron{ background:#111; border-color:#333; color:#999; }
   .present-top{ display:flex; align-items:center; gap:12px; padding:14px 18px; }
   .present-counter{ font-size:13px; color:var(--muted); font-variant-numeric: tabular-nums; min-width:56px; }
   .present-title{ font-family:'Fraunces'; font-weight:700; font-size:15px; flex:1; text-align:center; }
@@ -362,6 +377,10 @@
   <div class="present-top">
     <div class="present-counter" id="presentCounter"></div>
     <div class="present-title" id="presentTitle"></div>
+    <div class="seg" id="presentModeSeg" title="Chords: chord+lyric chart, same as the regular view. Prompter: lyrics only, large text on black, for a vocalist/congregation-facing screen.">
+      <button data-mode="chords">Chords</button>
+      <button data-mode="prompter">Prompter</button>
+    </div>
     <button class="iconbtn" id="presentClose">Close ✕</button>
   </div>
   <div class="present-body">
@@ -1308,6 +1327,16 @@ function setVideoSize(v){
 function getYoutubeEnabled(){ return STATE.settings.youtubeEnabled !== false; }
 function setYoutubeEnabled(v){
   STATE.settings.youtubeEnabled = !!v;
+  saveState();
+}
+// Present (fullscreen) view mode: 'chords' (the normal chord+lyric chart,
+// same as the regular song view) or 'prompter' (lyrics only, large text on
+// a black background, for a vocalist/congregation-facing screen while
+// instrumentalists on other devices stay on 'chords'). Device-wide and
+// persisted, like the other present-mode prefs above.
+function getPresentViewMode(){ return STATE.settings.presentViewMode === 'prompter' ? 'prompter' : 'chords'; }
+function setPresentViewMode(v){
+  STATE.settings.presentViewMode = v === 'prompter' ? 'prompter' : 'chords';
   saveState();
 }
 
@@ -2363,17 +2392,39 @@ function closePresent(){
   presentEl.classList.remove('open');
   document.body.style.overflow='';
 }
+// Fixed and deliberately large -- a stage/congregation screen is read from
+// much farther away than a tablet, so this doesn't scale with the normal
+// per-device chord-view font size at all.
+const PROMPTER_FONT_SIZE = 34;
+// Prompter mode strips everything but the sung words -- chords, the title
+// row and description row are already shown elsewhere (or not needed at
+// all for someone just reading lyrics off a screen).
+function lyricsOnlyRows(rows){
+  return rows.filter(r => r.cls!=='row-chord' && r.cls!=='row-title' && r.cls!=='row-desc');
+}
 function paintPresent(){
   const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
   if (!song){ closePresent(); return; }
   document.getElementById('presentCounter').textContent = `${presentIdx+1} / ${presentQueue.length}`;
   document.getElementById('presentTitle').textContent = splitTitleArtist(song.title).main;
+  const mode = getPresentViewMode();
+  presentEl.classList.toggle('prompter', mode==='prompter');
+  document.querySelectorAll('#presentModeSeg button').forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
   const prefs = songViewPrefs[song.id] || {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()};
-  const rows = computeSongRows(song, prefs.mode, prefs.target);
+  let rows = computeSongRows(song, prefs.mode, prefs.target);
+  // Prompter always uses a single full-width column at a large fixed size
+  // (scrolling if a song runs long), like a real stage prompter/lyric
+  // projector -- not the device's normal chord-view column/fit prefs
+  // (which auto-shrink to fit everything on one screen, the opposite of
+  // "big enough to read from across a room").
+  const columns = mode==='prompter' ? 1 : prefs.columns;
+  const fitMode = mode==='prompter' ? 'wrap' : prefs.fitMode;
+  const fontSize = mode==='prompter' ? PROMPTER_FONT_SIZE : getFontSize();
+  if (mode==='prompter') rows = lyricsOnlyRows(rows);
   const chartEl = document.getElementById('presentChart');
   requestAnimationFrame(()=>{
     const box = document.querySelector('.present-chart-wrap');
-    layoutChart(chartEl, rows, prefs.columns, box.clientWidth, box.clientHeight, {fitMode: prefs.fitMode, fontSize: getFontSize()});
+    layoutChart(chartEl, rows, columns, box.clientWidth, box.clientHeight, {fitMode, fontSize});
   });
 }
 function presentStep(delta){
@@ -2384,6 +2435,11 @@ function presentStep(delta){
 document.getElementById('presentPrev').addEventListener('click', ()=>presentStep(-1));
 document.getElementById('presentNext').addEventListener('click', ()=>presentStep(1));
 document.getElementById('presentClose').addEventListener('click', closePresent);
+document.getElementById('presentModeSeg').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button[data-mode]'); if (!btn) return;
+  setPresentViewMode(btn.dataset.mode);
+  paintPresent();
+});
 document.addEventListener('keydown', (e)=>{
   if (!presentEl.classList.contains('open')) return;
   if (e.key==='Escape') closePresent();
