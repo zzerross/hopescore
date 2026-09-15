@@ -306,6 +306,7 @@
   #present.prompter .present-title{ color:#eee; }
   #present.prompter .seg button{ background:#111; color:#ccc; border-color:#333; }
   #present.prompter .seg button.active{ background:#fff; color:#000; }
+  #present.prompter .font-size-label{ background:#111; color:#ccc; }
   #present.prompter #presentClose{ background:#111; color:#eee; border-color:#333; }
   #present.prompter .row-section{ color:#888; font-size:.65em; text-transform:uppercase; letter-spacing:.06em; }
   #present.prompter .row-lyric{ color:#fff; font-weight:600; }
@@ -380,6 +381,11 @@
     <div class="seg" id="presentModeSeg" title="Chords: chord+lyric chart, same as the regular view. Prompter: lyrics only, large text on black, for a vocalist/congregation-facing screen.">
       <button data-mode="chords">Chords</button>
       <button data-mode="prompter">Prompter</button>
+    </div>
+    <div class="seg" id="presentFontSeg" title="Font size -- remembered per song, per view (Chords/Prompter)">
+      <button id="presentFontDec" title="Smaller">A−</button>
+      <span class="font-size-label" id="presentFontLabel"></span>
+      <button id="presentFontInc" title="Larger">A+</button>
     </div>
     <button class="iconbtn" id="presentClose">Close ✕</button>
   </div>
@@ -1290,11 +1296,27 @@ let STATE = loadState();
 function saveState(){
   localStorage.setItem(STORE_KEY, JSON.stringify(STATE));
 }
-// Wrap-mode font size: a single device-wide default, persisted so it's the
-// same next time the app is opened rather than resetting per song.
-function getFontSize(){ return STATE.settings.fontSize || 16; }
-function setFontSize(px){
-  STATE.settings.fontSize = Math.max(8, Math.min(32, px));
+// Wrap-mode font size, remembered per (song, view) -- a vocalist's
+// Prompter screen and an instrumentalist's Chords screen each keep their
+// own size per song (e.g. a small-print song needs bigger text either
+// way), without one view's adjustment clobbering the other's. Falls back
+// to a per-view default when this exact song/view combo hasn't been
+// adjusted yet. This is already implicitly scoped "per browser/device" --
+// each browser's own localStorage is separate -- so no separate browser-
+// type key is needed on top of that.
+const FONT_SIZE_DEFAULT = { chords: 16, prompter: 34 };
+const FONT_SIZE_RANGE = { chords: [8, 40], prompter: [16, 72] };
+function getFontSize(view, songId){
+  const bySongView = STATE.settings.fontSizeBySongView || {};
+  const key = songId ? `${view}:${songId}` : null;
+  if (key && Object.prototype.hasOwnProperty.call(bySongView, key)) return bySongView[key];
+  if (view === 'chords' && STATE.settings.fontSize) return STATE.settings.fontSize; // pre-existing single global default
+  return FONT_SIZE_DEFAULT[view] || 16;
+}
+function setFontSize(view, songId, px){
+  const [lo, hi] = FONT_SIZE_RANGE[view] || [8, 72];
+  STATE.settings.fontSizeBySongView = STATE.settings.fontSizeBySongView || {};
+  STATE.settings.fontSizeBySongView[`${view}:${songId}`] = Math.max(lo, Math.min(hi, px));
   saveState();
 }
 // Whether 2+ consecutive blank lines collapse into one gap. On by default;
@@ -2067,7 +2089,7 @@ function renderEditView(songId){
       if (previewPrefs.fitMode === 'wrap'){
         previewCard.style.height = 'auto';
         previewCard.style.overflow = 'visible';
-        layoutChart(preview, rows, previewPrefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize()});
+        layoutChart(preview, rows, previewPrefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize('chords', existing?.id)});
       } else {
         const top = previewCard.getBoundingClientRect().top;
         const cardHeight = Math.max(160, window.innerHeight - top - 24);
@@ -2181,9 +2203,9 @@ function renderSongView(songId){
       <button data-fit="auto" class="${prefs.fitMode!=='wrap'?'active':''}" title="Shrink text so nothing wraps">Auto</button>
       <button data-fit="wrap" class="${prefs.fitMode==='wrap'?'active':''}" title="Keep font size fixed; wrap long lines">Wrap</button>
     </div>
-    <div class="seg" id="fontSizeSeg" title="Base font size for chords/lyrics -- remembered on this device">
+    <div class="seg" id="fontSizeSeg" title="Base font size for chords/lyrics -- remembered per song on this device">
       <button id="fontDec" title="Smaller">A−</button>
-      <span class="font-size-label" id="fontSizeLabel">${getFontSize()}px</span>
+      <span class="font-size-label" id="fontSizeLabel">${getFontSize('chords', song.id)}px</span>
       <button id="fontInc" title="Larger">A+</button>
     </div>
     <div class="seg" id="blankSeg" title="Multiple consecutive blank lines in the source text">
@@ -2259,7 +2281,7 @@ function renderSongView(songId){
       if (prefs.fitMode === 'wrap'){
         chartCard.style.height = 'auto';
         chartCard.style.overflow = 'visible';
-        layoutChart(chartEl, rows, prefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize()});
+        layoutChart(chartEl, rows, prefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize('chords', song.id)});
       } else {
         const top = chartCard.getBoundingClientRect().top;
         const cardHeight = Math.max(160, window.innerHeight - top - 24);
@@ -2334,8 +2356,8 @@ function renderSongView(songId){
       setDefaultFitMode('wrap');
       document.querySelectorAll('#fitSeg button').forEach(b=>b.classList.toggle('active', b.dataset.fit==='wrap'));
     }
-    setFontSize(getFontSize()+delta);
-    document.getElementById('fontSizeLabel').textContent = getFontSize()+'px';
+    setFontSize('chords', song.id, getFontSize('chords', song.id)+delta);
+    document.getElementById('fontSizeLabel').textContent = getFontSize('chords', song.id)+'px';
     repaint();
   }
   document.getElementById('fontDec').addEventListener('click', ()=> bumpFontSize(-1));
@@ -2392,10 +2414,6 @@ function closePresent(){
   presentEl.classList.remove('open');
   document.body.style.overflow='';
 }
-// Fixed and deliberately large -- a stage/congregation screen is read from
-// much farther away than a tablet, so this doesn't scale with the normal
-// per-device chord-view font size at all.
-const PROMPTER_FONT_SIZE = 34;
 // Prompter mode strips everything but the sung words -- chords, the title
 // row and description row are already shown elsewhere (or not needed at
 // all for someone just reading lyrics off a screen).
@@ -2410,6 +2428,7 @@ function paintPresent(){
   const mode = getPresentViewMode();
   presentEl.classList.toggle('prompter', mode==='prompter');
   document.querySelectorAll('#presentModeSeg button').forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
+  document.getElementById('presentFontLabel').textContent = getFontSize(mode, song.id)+'px';
   const prefs = songViewPrefs[song.id] || {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()};
   let rows = computeSongRows(song, prefs.mode, prefs.target);
   // Prompter always uses a single full-width column at a large fixed size
@@ -2419,7 +2438,7 @@ function paintPresent(){
   // "big enough to read from across a room").
   const columns = mode==='prompter' ? 1 : prefs.columns;
   const fitMode = mode==='prompter' ? 'wrap' : prefs.fitMode;
-  const fontSize = mode==='prompter' ? PROMPTER_FONT_SIZE : getFontSize();
+  const fontSize = getFontSize(mode, song.id);
   if (mode==='prompter') rows = lyricsOnlyRows(rows);
   const chartEl = document.getElementById('presentChart');
   requestAnimationFrame(()=>{
@@ -2432,9 +2451,26 @@ function presentStep(delta){
   presentIdx = ((presentIdx+delta)%n+n)%n;
   paintPresent();
 }
+// A-/A+ works in either mode; in Chords (where fitMode can be Auto,
+// which recomputes and would just undo a manual size), it pins this
+// song to Wrap first -- same override behavior as the regular song
+// view's A-/A+.
+function bumpPresentFontSize(delta){
+  const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
+  if (!song) return;
+  const mode = getPresentViewMode();
+  if (mode==='chords'){
+    const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
+    if (prefs.fitMode !== 'wrap'){ prefs.fitMode = 'wrap'; setDefaultFitMode('wrap'); }
+  }
+  setFontSize(mode, song.id, getFontSize(mode, song.id)+delta);
+  paintPresent();
+}
 document.getElementById('presentPrev').addEventListener('click', ()=>presentStep(-1));
 document.getElementById('presentNext').addEventListener('click', ()=>presentStep(1));
 document.getElementById('presentClose').addEventListener('click', closePresent);
+document.getElementById('presentFontDec').addEventListener('click', ()=> bumpPresentFontSize(-1));
+document.getElementById('presentFontInc').addEventListener('click', ()=> bumpPresentFontSize(1));
 document.getElementById('presentModeSeg').addEventListener('click', (e)=>{
   const btn = e.target.closest('button[data-mode]'); if (!btn) return;
   setPresentViewMode(btn.dataset.mode);
