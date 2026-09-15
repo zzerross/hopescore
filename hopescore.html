@@ -328,9 +328,17 @@
      address-bar strip at first paint). The chevron itself is drawn with
      CSS borders rather than a Unicode glyph, since glyph coverage/shaping
      for "▲/▼" isn't guaranteed across every mobile font stack the way a
-     plain colored triangle is. */
+     plain colored triangle is.
+     Sits in the top-left corner rather than top-center: since it's a
+     position:absolute sibling of the horizontally-scrolling .present-top,
+     it never moves with that scroll, so whatever toolbar button happened
+     to land under its screen position got silently covered. .present-top
+     below reserves a permanent left gutter the same width as this button
+     (see its margin-left), so no scroll position can ever slide toolbar
+     content underneath it -- the fix isn't the corner placement itself so
+     much as guaranteeing that patch of the toolbar is never occupied. */
   .present-toolbar-toggle{
-    position:absolute; top:6px; left:50%; transform:translateX(-50%); z-index:20;
+    position:absolute; top:6px; left:6px; z-index:20;
     width:64px; height:26px; padding:0; margin:0;
     border:1px solid var(--paper-line); border-radius:8px;
     background:var(--surface); cursor:pointer;
@@ -382,6 +390,7 @@
      from happening in the first place). */
   .present-top{
     display:flex; align-items:center; gap:12px; padding:14px 18px;
+    margin-left:76px; /* permanent gutter for .present-toolbar-toggle -- see its comment */
     overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch;
   }
   .present-top::-webkit-scrollbar{ display:none; }
@@ -398,7 +407,7 @@
      nothing clickable in that clipped sliver. Pinned to their natural size;
      .present-top's own overflow-x:auto is what absorbs any leftover
      overflow now, on whatever's narrowest. */
-  #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentFontSeg, #presentClose{ flex-shrink:0; }
+  #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentColSeg, #presentFitSeg, #presentFontSeg, #presentClose{ flex-shrink:0; }
   .present-body{ flex:1; position:relative; overflow:hidden; padding:0 26px 26px; }
   .present-chart-wrap{
     position:absolute; inset:0 26px 26px; display:flex;
@@ -467,6 +476,14 @@
     <button class="iconbtn" id="presentThemeToggle" title="Toggle the dark stage theme">Dark</button>
     <button class="iconbtn" id="presentChordsToggle" title="Show/hide chords">Chords</button>
     <button class="iconbtn" id="presentSectionsToggle" title="Show/hide part labels (Verse, Chorus…)">Parts</button>
+    <div class="seg" id="presentColSeg">
+      <button data-col="1" title="1 column">1</button>
+      <button data-col="2" title="2 columns">2</button>
+    </div>
+    <div class="seg" id="presentFitSeg">
+      <button data-fit="auto" title="Shrink text so nothing wraps">Auto</button>
+      <button data-fit="wrap" title="Keep font size fixed; wrap long lines">Wrap</button>
+    </div>
     <div class="seg" id="presentFontSeg" title="Font size -- remembered per song, for chords shown vs. hidden">
       <button id="presentFontDec" title="Smaller">A−</button>
       <span class="font-size-label" id="presentFontLabel"></span>
@@ -2582,7 +2599,15 @@ function paintPresent(){
   const fontView = showChords ? 'chords' : 'prompter';
   document.getElementById('presentFontLabel').textContent = getFontSize(fontView, song.id)+'px';
 
-  const prefs = songViewPrefs[song.id] || {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()};
+  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
+  // Same column-count / fit-mode controls as the regular song view, mirrored
+  // here now that the toolbar has a hide button -- no reason not to offer
+  // the same layout controls in Present. They only visibly change anything
+  // while chords are shown (see the columns/fitMode consts below); with
+  // chords hidden they still record the choice for whenever chords come
+  // back on, same as how font size buckets by view.
+  document.querySelectorAll('#presentColSeg button').forEach(b=> b.classList.toggle('active', Number(b.dataset.col)===prefs.columns));
+  document.querySelectorAll('#presentFitSeg button').forEach(b=> b.classList.toggle('active', b.dataset.fit==='wrap' ? prefs.fitMode==='wrap' : prefs.fitMode!=='wrap'));
   let rows = computeSongRows(song, prefs.mode, prefs.target);
   // Chords hidden always uses a single full-width column at a large fixed
   // size (scrolling if a song runs long), like a real stage prompter/
@@ -2635,6 +2660,24 @@ document.getElementById('presentChordsToggle').addEventListener('click', ()=>{
 });
 document.getElementById('presentSectionsToggle').addEventListener('click', ()=>{
   setPresentShowSections(!getPresentShowSections());
+  paintPresent();
+});
+document.getElementById('presentColSeg').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button[data-col]'); if (!btn) return;
+  const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
+  if (!song) return;
+  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
+  prefs.columns = Number(btn.dataset.col);
+  setDefaultColumns(prefs.columns);
+  paintPresent();
+});
+document.getElementById('presentFitSeg').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button[data-fit]'); if (!btn) return;
+  const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
+  if (!song) return;
+  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
+  prefs.fitMode = btn.dataset.fit;
+  setDefaultFitMode(prefs.fitMode);
   paintPresent();
 });
 document.getElementById('presentToolbarToggle').addEventListener('click', ()=>{
