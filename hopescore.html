@@ -355,9 +355,16 @@
   }
   .present-toolbar-toggle:hover::after{ border-bottom-color:var(--ink); }
   #present.toolbar-hidden .present-toolbar-toggle:hover::after{ border-top-color:var(--ink); }
-  #present.black-theme .present-toolbar-toggle{ background:#111; border-color:#333; }
-  #present.black-theme .present-toolbar-toggle::after{ border-bottom-color:#999; }
-  #present.black-theme.toolbar-hidden .present-toolbar-toggle::after{ border-top-color:#999; }
+  /* Lighter than the rest of the black theme's controls (which go to a
+     near-invisible #111 on #333 against the pure #000 backdrop) on purpose:
+     this button's whole job is staying findable even when everything else
+     is hidden, so it needs real contrast against black, not just enough to
+     technically differ from it. */
+  #present.black-theme .present-toolbar-toggle{ background:#2a2a2a; border-color:#555; }
+  #present.black-theme .present-toolbar-toggle::after{ border-bottom-color:#bbb; }
+  #present.black-theme.toolbar-hidden .present-toolbar-toggle::after{ border-top-color:#bbb; }
+  #present.black-theme .present-toolbar-toggle:hover::after{ border-bottom-color:#fff; }
+  #present.black-theme.toolbar-hidden .present-toolbar-toggle:hover::after{ border-top-color:#fff; }
   /* The dark stage theme always renders black-on-white-text regardless of
      the device's own light/dark theme -- it's a stage/congregation-facing
      look, not meant to follow whatever theme the operator's device happens
