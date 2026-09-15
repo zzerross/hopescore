@@ -347,25 +347,31 @@
   }
   .present-toolbar-toggle:hover::after{ border-bottom-color:var(--ink); }
   #present.toolbar-hidden .present-toolbar-toggle:hover::after{ border-top-color:var(--ink); }
-  #present.prompter .present-toolbar-toggle{ background:#111; border-color:#333; }
-  #present.prompter .present-toolbar-toggle::after{ border-bottom-color:#999; }
-  #present.prompter.toolbar-hidden .present-toolbar-toggle::after{ border-top-color:#999; }
-  /* Prompter mode always renders black-on-white-text regardless of the
-     device's own light/dark theme -- it's a stage/congregation-facing
-     screen, not meant to follow whatever theme the operator's device
-     happens to be in. Only row-lyric and row-section actually appear here
-     (paintPresent() filters chord/title/description rows out), so those
-     are the only row classes overridden. */
-  #present.prompter{ background:#000; color:#fff; }
-  #present.prompter .present-counter{ color:#666; }
-  #present.prompter .present-title{ color:#eee; }
-  #present.prompter .seg button{ background:#111; color:#ccc; border-color:#333; }
-  #present.prompter .seg button.active{ background:#fff; color:#000; }
-  #present.prompter .font-size-label{ background:#111; color:#ccc; }
-  #present.prompter #presentClose{ background:#111; color:#eee; border-color:#333; }
-  #present.prompter .row-section{ color:#888; font-size:.65em; text-transform:uppercase; letter-spacing:.06em; }
-  #present.prompter .row-lyric{ color:#fff; font-weight:600; }
-  #present.prompter .tap-chevron{ background:#111; border-color:#333; color:#999; }
+  #present.black-theme .present-toolbar-toggle{ background:#111; border-color:#333; }
+  #present.black-theme .present-toolbar-toggle::after{ border-bottom-color:#999; }
+  #present.black-theme.toolbar-hidden .present-toolbar-toggle::after{ border-top-color:#999; }
+  /* The dark stage theme always renders black-on-white-text regardless of
+     the device's own light/dark theme -- it's a stage/congregation-facing
+     look, not meant to follow whatever theme the operator's device happens
+     to be in. Independent of whether chords/sections are actually shown
+     (those are separate toggles -- see getPresentShowChords/
+     getPresentShowSections), so every row class needs a legible override
+     here, not just row-lyric/row-section like when this was baked into a
+     single "Prompter" preset that always hid chords. */
+  #present.black-theme{ background:#000; color:#fff; }
+  #present.black-theme .present-counter{ color:#666; }
+  #present.black-theme .present-title{ color:#eee; }
+  #present.black-theme .seg button{ background:#111; color:#ccc; border-color:#333; }
+  #present.black-theme .seg button.active,
+  #present.black-theme .iconbtn.primary{ background:#fff; color:#000; border-color:#fff; }
+  #present.black-theme .font-size-label{ background:#111; color:#ccc; }
+  #present.black-theme #presentClose{ background:#111; color:#eee; border-color:#333; }
+  #present.black-theme .row-title{ color:#E3A15C; }
+  #present.black-theme .row-desc{ color:#8E8A7C; }
+  #present.black-theme .row-section{ color:#888; font-size:.65em; text-transform:uppercase; letter-spacing:.06em; }
+  #present.black-theme .row-chord{ color:#7FB4E0; }
+  #present.black-theme .row-lyric{ color:#fff; font-weight:600; }
+  #present.black-theme .tap-chevron{ background:#111; border-color:#333; color:#999; }
   /* min-width:0 + white-space:nowrap on .present-title matters: without it,
      a flex child's default min-width is its content's natural size, so a
      long title wraps onto several lines instead of shrinking -- which on a
@@ -392,7 +398,7 @@
      nothing clickable in that clipped sliver. Pinned to their natural size;
      .present-top's own overflow-x:auto is what absorbs any leftover
      overflow now, on whatever's narrowest. */
-  #presentModeSeg, #presentFontSeg, #presentClose{ flex-shrink:0; }
+  #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentFontSeg, #presentClose{ flex-shrink:0; }
   .present-body{ flex:1; position:relative; overflow:hidden; padding:0 26px 26px; }
   .present-chart-wrap{
     position:absolute; inset:0 26px 26px; display:flex;
@@ -458,11 +464,10 @@
   <div class="present-top">
     <div class="present-counter" id="presentCounter"></div>
     <div class="present-title" id="presentTitle"></div>
-    <div class="seg" id="presentModeSeg" title="Chords: chord+lyric chart, same as the regular view. Prompter: lyrics only, large text on black, for a vocalist/congregation-facing screen.">
-      <button data-mode="chords">Chords</button>
-      <button data-mode="prompter">Prompter</button>
-    </div>
-    <div class="seg" id="presentFontSeg" title="Font size -- remembered per song, per view (Chords/Prompter)">
+    <button class="iconbtn" id="presentThemeToggle" title="Toggle the dark stage theme">Dark</button>
+    <button class="iconbtn" id="presentChordsToggle" title="Show/hide chords">Chords</button>
+    <button class="iconbtn" id="presentSectionsToggle" title="Show/hide part labels (Verse, Chorus…)">Parts</button>
+    <div class="seg" id="presentFontSeg" title="Font size -- remembered per song, for chords shown vs. hidden">
       <button id="presentFontDec" title="Smaller">A−</button>
       <span class="font-size-label" id="presentFontLabel"></span>
       <button id="presentFontInc" title="Larger">A+</button>
@@ -1431,14 +1436,36 @@ function setYoutubeEnabled(v){
   STATE.settings.youtubeEnabled = !!v;
   saveState();
 }
-// Present (fullscreen) view mode: 'chords' (the normal chord+lyric chart,
-// same as the regular song view) or 'prompter' (lyrics only, large text on
-// a black background, for a vocalist/congregation-facing screen while
-// instrumentalists on other devices stay on 'chords'). Device-wide and
-// persisted, like the other present-mode prefs above.
-function getPresentViewMode(){ return STATE.settings.presentViewMode === 'prompter' ? 'prompter' : 'chords'; }
-function setPresentViewMode(v){
-  STATE.settings.presentViewMode = v === 'prompter' ? 'prompter' : 'chords';
+// Present (fullscreen) view is built from three independent toggles rather
+// than one fixed preset, so any combination is possible -- e.g. the dark
+// stage theme with chords still shown, or plain lyrics with no part labels
+// on the normal theme. All device-wide and persisted, like the other
+// present-mode prefs above.
+//
+// Each getter falls back to the old single presentViewMode ('chords' /
+// 'prompter') when its own new setting has never been explicitly set, so
+// someone who already had Prompter picked keeps seeing the equivalent
+// (dark theme, chords hidden, sections shown) after this upgrade instead
+// of silently reverting to the chords-shown defaults.
+function getPresentTheme(){
+  if (STATE.settings.presentTheme === 'black' || STATE.settings.presentTheme === 'normal') return STATE.settings.presentTheme;
+  return STATE.settings.presentViewMode === 'prompter' ? 'black' : 'normal';
+}
+function setPresentTheme(v){
+  STATE.settings.presentTheme = v === 'black' ? 'black' : 'normal';
+  saveState();
+}
+function getPresentShowChords(){
+  if (typeof STATE.settings.presentShowChords === 'boolean') return STATE.settings.presentShowChords;
+  return STATE.settings.presentViewMode !== 'prompter';
+}
+function setPresentShowChords(v){
+  STATE.settings.presentShowChords = !!v;
+  saveState();
+}
+function getPresentShowSections(){ return STATE.settings.presentShowSections !== false; }
+function setPresentShowSections(v){
+  STATE.settings.presentShowSections = !!v;
   saveState();
 }
 // Whether Present's toolbar (counter/title/mode/font/Close) is hidden --
@@ -2519,35 +2546,53 @@ function closePresent(){
   presentEl.classList.remove('open');
   document.body.style.overflow='';
 }
-// Prompter mode strips everything but the sung words -- chords, the title
-// row and description row are already shown elsewhere (or not needed at
-// all for someone just reading lyrics off a screen).
-function lyricsOnlyRows(rows){
-  return rows.filter(r => r.cls!=='row-chord' && r.cls!=='row-title' && r.cls!=='row-desc');
+// Applies the Chords/Parts toggles to a row list. Chords off also drops
+// the title/description rows -- they're either shown separately (title,
+// in the topbar) or just clutter for someone reading lyrics off a screen
+// -- while Parts off only ever touches section labels.
+function filterPresentRows(rows, showChords, showSections){
+  return rows.filter(r => {
+    if (!showChords && (r.cls==='row-chord' || r.cls==='row-title' || r.cls==='row-desc')) return false;
+    if (!showSections && r.cls==='row-section') return false;
+    return true;
+  });
 }
 function paintPresent(){
   const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
   if (!song){ closePresent(); return; }
   document.getElementById('presentCounter').textContent = `${presentIdx+1} / ${presentQueue.length}`;
   document.getElementById('presentTitle').textContent = splitTitleArtist(song.title).main;
-  const mode = getPresentViewMode();
-  presentEl.classList.toggle('prompter', mode==='prompter');
+
+  const theme = getPresentTheme();
+  const showChords = getPresentShowChords();
+  const showSections = getPresentShowSections();
+  presentEl.classList.toggle('black-theme', theme==='black');
+  document.getElementById('presentThemeToggle').classList.toggle('primary', theme==='black');
+  document.getElementById('presentChordsToggle').classList.toggle('primary', showChords);
+  document.getElementById('presentSectionsToggle').classList.toggle('primary', showSections);
+
   const toolbarHidden = getPresentToolbarHidden();
   presentEl.classList.toggle('toolbar-hidden', toolbarHidden);
   document.getElementById('presentToolbarToggle').title = toolbarHidden ? 'Show toolbar' : 'Hide toolbar';
-  document.querySelectorAll('#presentModeSeg button').forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
-  document.getElementById('presentFontLabel').textContent = getFontSize(mode, song.id)+'px';
+
+  // Font size is remembered per song for "chords shown" vs. "chords
+  // hidden" (reuses the same two buckets Chords/Prompter used before this
+  // became three independent toggles -- chords-hidden still wants a much
+  // bigger default than chords-shown, regardless of theme/section state).
+  const fontView = showChords ? 'chords' : 'prompter';
+  document.getElementById('presentFontLabel').textContent = getFontSize(fontView, song.id)+'px';
+
   const prefs = songViewPrefs[song.id] || {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()};
   let rows = computeSongRows(song, prefs.mode, prefs.target);
-  // Prompter always uses a single full-width column at a large fixed size
-  // (scrolling if a song runs long), like a real stage prompter/lyric
-  // projector -- not the device's normal chord-view column/fit prefs
-  // (which auto-shrink to fit everything on one screen, the opposite of
-  // "big enough to read from across a room").
-  const columns = mode==='prompter' ? 1 : prefs.columns;
-  const fitMode = mode==='prompter' ? 'wrap' : prefs.fitMode;
-  const fontSize = getFontSize(mode, song.id);
-  if (mode==='prompter') rows = lyricsOnlyRows(rows);
+  // Chords hidden always uses a single full-width column at a large fixed
+  // size (scrolling if a song runs long), like a real stage prompter/
+  // lyric projector -- not the device's normal chord-view column/fit
+  // prefs (which auto-shrink to fit everything on one screen, the
+  // opposite of "big enough to read from across a room").
+  const columns = showChords ? prefs.columns : 1;
+  const fitMode = showChords ? prefs.fitMode : 'wrap';
+  const fontSize = getFontSize(fontView, song.id);
+  rows = filterPresentRows(rows, showChords, showSections);
   const chartEl = document.getElementById('presentChart');
   requestAnimationFrame(()=>{
     const box = document.querySelector('.present-chart-wrap');
@@ -2559,19 +2604,20 @@ function presentStep(delta){
   presentIdx = ((presentIdx+delta)%n+n)%n;
   paintPresent();
 }
-// A-/A+ works in either mode; in Chords (where fitMode can be Auto,
+// A-/A+ works either way; with chords shown (where fitMode can be Auto,
 // which recomputes and would just undo a manual size), it pins this
 // song to Wrap first -- same override behavior as the regular song
 // view's A-/A+.
 function bumpPresentFontSize(delta){
   const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
   if (!song) return;
-  const mode = getPresentViewMode();
-  if (mode==='chords'){
+  const showChords = getPresentShowChords();
+  const fontView = showChords ? 'chords' : 'prompter';
+  if (showChords){
     const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
     if (prefs.fitMode !== 'wrap'){ prefs.fitMode = 'wrap'; setDefaultFitMode('wrap'); }
   }
-  setFontSize(mode, song.id, getFontSize(mode, song.id)+delta);
+  setFontSize(fontView, song.id, getFontSize(fontView, song.id)+delta);
   paintPresent();
 }
 document.getElementById('presentPrev').addEventListener('click', ()=>presentStep(-1));
@@ -2579,9 +2625,16 @@ document.getElementById('presentNext').addEventListener('click', ()=>presentStep
 document.getElementById('presentClose').addEventListener('click', closePresent);
 document.getElementById('presentFontDec').addEventListener('click', ()=> bumpPresentFontSize(-1));
 document.getElementById('presentFontInc').addEventListener('click', ()=> bumpPresentFontSize(1));
-document.getElementById('presentModeSeg').addEventListener('click', (e)=>{
-  const btn = e.target.closest('button[data-mode]'); if (!btn) return;
-  setPresentViewMode(btn.dataset.mode);
+document.getElementById('presentThemeToggle').addEventListener('click', ()=>{
+  setPresentTheme(getPresentTheme()==='black' ? 'normal' : 'black');
+  paintPresent();
+});
+document.getElementById('presentChordsToggle').addEventListener('click', ()=>{
+  setPresentShowChords(!getPresentShowChords());
+  paintPresent();
+});
+document.getElementById('presentSectionsToggle').addEventListener('click', ()=>{
+  setPresentShowSections(!getPresentShowSections());
   paintPresent();
 });
 document.getElementById('presentToolbarToggle').addEventListener('click', ()=>{
