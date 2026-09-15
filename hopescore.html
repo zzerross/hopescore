@@ -329,9 +329,33 @@
   #present.prompter .row-section{ color:#888; font-size:.65em; text-transform:uppercase; letter-spacing:.06em; }
   #present.prompter .row-lyric{ color:#fff; font-weight:600; }
   #present.prompter .tap-chevron{ background:#111; border-color:#333; color:#999; }
-  .present-top{ display:flex; align-items:center; gap:12px; padding:14px 18px; }
-  .present-counter{ font-size:13px; color:var(--muted); font-variant-numeric: tabular-nums; min-width:56px; }
-  .present-title{ font-family:'Fraunces'; font-weight:700; font-size:15px; flex:1; text-align:center; }
+  /* min-width:0 + white-space:nowrap on .present-title matters: without it,
+     a flex child's default min-width is its content's natural size, so a
+     long title wraps onto several lines instead of shrinking -- which on a
+     narrow phone pushed the Prompter toggle, font +/-, and part of Close
+     off the edge of the screen with nothing to scroll them back into view
+     (overflow-x:auto here is the belt-and-suspenders fallback for that,
+     matching .topbar-scroll's own pattern; the title fix is what stops it
+     from happening in the first place). */
+  .present-top{
+    display:flex; align-items:center; gap:12px; padding:14px 18px;
+    overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch;
+  }
+  .present-top::-webkit-scrollbar{ display:none; }
+  .present-counter{ font-size:13px; color:var(--muted); font-variant-numeric: tabular-nums; min-width:56px; flex-shrink:0; }
+  .present-title{
+    font-family:'Fraunces'; font-weight:700; font-size:15px; flex:1; text-align:center;
+    min-width:60px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  /* Everything else in the bar defaults to flex-shrink:1 too, which -- once
+     the title stopped absorbing all the overflow itself (see above) -- was
+     instead squeezing these down below their own content width. A .seg's
+     overflow:hidden then silently clipped the shrunk buttons' text (the
+     Prompter toggle, the font +/- controls) down to nothing visible and
+     nothing clickable in that clipped sliver. Pinned to their natural size;
+     .present-top's own overflow-x:auto is what absorbs any leftover
+     overflow now, on whatever's narrowest. */
+  #presentModeSeg, #presentFontSeg, #presentClose{ flex-shrink:0; }
   .present-body{ flex:1; position:relative; overflow:hidden; padding:0 26px 26px; }
   .present-chart-wrap{
     position:absolute; inset:0 26px 26px; display:flex;
