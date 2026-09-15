@@ -313,6 +313,24 @@
     display:none; flex-direction:column;
   }
   #present.open{ display:flex; }
+  /* Prompter is often shown on a second, congregation-facing screen (a
+     projector/TV) rather than just an operator's own tablet -- the
+     toolbar (counter, title, mode/font controls, Close) has no business
+     being visible there. Hidden via display:none so .present-body (a
+     flex:1 sibling in #present's column layout) simply expands to fill
+     the space, no extra positioning needed. The toggle handle itself
+     lives outside .present-top (a sibling, not a child) specifically so
+     it stays reachable even while the bar it controls is hidden. */
+  #present.toolbar-hidden .present-top{ display:none; }
+  .present-toolbar-toggle{
+    position:absolute; top:0; left:50%; transform:translateX(-50%); z-index:10;
+    width:48px; height:16px; padding:0; margin:0;
+    border:1px solid var(--paper-line); border-top:none; border-radius:0 0 10px 10px;
+    background:var(--surface); color:var(--muted); font-size:11px; line-height:1; cursor:pointer;
+  }
+  .present-toolbar-toggle:hover{ color:var(--ink); }
+  #present.prompter .present-toolbar-toggle{ background:#111; color:#777; border-color:#333; }
+  #present.prompter .present-toolbar-toggle:hover{ color:#ccc; }
   /* Prompter mode always renders black-on-white-text regardless of the
      device's own light/dark theme -- it's a stage/congregation-facing
      screen, not meant to follow whatever theme the operator's device
@@ -417,6 +435,7 @@
 </div>
 
 <div id="present">
+  <button id="presentToolbarToggle" class="present-toolbar-toggle" title="Hide toolbar">▲</button>
   <div class="present-top">
     <div class="present-counter" id="presentCounter"></div>
     <div class="present-title" id="presentTitle"></div>
@@ -1401,6 +1420,16 @@ function setYoutubeEnabled(v){
 function getPresentViewMode(){ return STATE.settings.presentViewMode === 'prompter' ? 'prompter' : 'chords'; }
 function setPresentViewMode(v){
   STATE.settings.presentViewMode = v === 'prompter' ? 'prompter' : 'chords';
+  saveState();
+}
+// Whether Present's toolbar (counter/title/mode/font/Close) is hidden --
+// device-wide, not per-mode, since this is really about what kind of
+// screen this device is: an operator's own control screen keeps it
+// visible, while a device driving a second, congregation-facing display
+// wants it hidden regardless of which of Chords/Prompter is showing.
+function getPresentToolbarHidden(){ return !!STATE.settings.presentToolbarHidden; }
+function setPresentToolbarHidden(v){
+  STATE.settings.presentToolbarHidden = !!v;
   saveState();
 }
 
@@ -2484,6 +2513,11 @@ function paintPresent(){
   document.getElementById('presentTitle').textContent = splitTitleArtist(song.title).main;
   const mode = getPresentViewMode();
   presentEl.classList.toggle('prompter', mode==='prompter');
+  const toolbarHidden = getPresentToolbarHidden();
+  presentEl.classList.toggle('toolbar-hidden', toolbarHidden);
+  const toolbarToggle = document.getElementById('presentToolbarToggle');
+  toolbarToggle.textContent = toolbarHidden ? '▼' : '▲';
+  toolbarToggle.title = toolbarHidden ? 'Show toolbar' : 'Hide toolbar';
   document.querySelectorAll('#presentModeSeg button').forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
   document.getElementById('presentFontLabel').textContent = getFontSize(mode, song.id)+'px';
   const prefs = songViewPrefs[song.id] || {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()};
@@ -2531,6 +2565,10 @@ document.getElementById('presentFontInc').addEventListener('click', ()=> bumpPre
 document.getElementById('presentModeSeg').addEventListener('click', (e)=>{
   const btn = e.target.closest('button[data-mode]'); if (!btn) return;
   setPresentViewMode(btn.dataset.mode);
+  paintPresent();
+});
+document.getElementById('presentToolbarToggle').addEventListener('click', ()=>{
+  setPresentToolbarHidden(!getPresentToolbarHidden());
   paintPresent();
 });
 document.addEventListener('keydown', (e)=>{
