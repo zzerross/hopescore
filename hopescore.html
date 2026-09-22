@@ -1843,8 +1843,70 @@ const viewRoot = document.getElementById('viewRoot');
 // renderHomeView()) rather than behind a separate view/tab.
 let route = {view:'home', date: dateFromUrl() || nearestSundayISO()};
 let activeSongRepaint = null;
+// Set by renderEditView() to a closure checking its own form fields against
+// their last-saved values, and cleared on leaving -- lets the popstate/
+// beforeunload guards below ask "does the *current* edit view have unsaved
+// changes" without them needing to know anything about its form fields.
+let editDirtyCheck = null;
 
 function go(r){ route = r; render(); window.scrollTo(0,0); }
+// Entering the editor pushes a real history entry (regular go() doesn't, on
+// purpose -- see the note above the popstate listener) specifically so the
+// phone/browser back button while editing hits that listener's unsaved-
+// changes guard instead of leaving the app outright with the edit silently
+// discarded, which is what happened before this existed.
+// Tags the entry being left with the route it actually is first -- regular
+// go() never touches history, so without this the entry sitting under the
+// pushed edit one would still carry whatever (or nothing) was there from
+// the initial page load, and back from the editor would land there instead
+// of on the specific song the editor was opened from.
+function goToEdit(r){
+  history.replaceState({route}, '');
+  route = r;
+  history.pushState({route:r}, '');
+  render();
+  window.scrollTo(0,0);
+}
+// Leaving the editor (Save/Cancel/Delete) overwrites that same history
+// entry with the destination rather than pushing a new one, so the entry
+// the user was on *before* opening the editor is still exactly one "back"
+// away -- it doesn't matter here whether that destination is the view they
+// started from (Cancel) or a different one (Save on a brand-new song lands
+// on that song's own view, not back on Home).
+function goReplaceTop(r){ route = r; history.replaceState({route:r}, ''); render(); window.scrollTo(0,0); }
+
+// The phone/browser back button firing a popstate while the editor has
+// unsaved changes: the navigation has already happened at this point (the
+// History API gives no way to preventDefault a popstate), so "staying put"
+// means pushing the edit entry straight back on top -- the URL/history
+// doesn't visibly move and nothing re-renders while the confirm is up. A
+// confirmed "leave" then reuses goReplaceTop (the same path Save/Cancel/
+// Delete already use) to land on the real destination by overwriting that
+// same pushed entry, rather than trying to History.back() past it -- that
+// would have undone only the neutralizing push itself, leaving the user
+// stuck back on the edit view instead of actually leaving.
+window.addEventListener('popstate', (e)=>{
+  if (route.view==='edit' && editDirtyCheck && editDirtyCheck()){
+    const targetRoute = (e.state && e.state.route) || {view:'home', date: nearestSundayISO()};
+    history.pushState({route}, '');
+    confirmModal('Unsaved changes', "This song has changes that haven't been saved yet. Leave without saving?", 'Leave without saving').then(ok=>{
+      if (ok){ editDirtyCheck = null; goReplaceTop(targetRoute); }
+    });
+    return;
+  }
+  editDirtyCheck = null;
+  route = (e.state && e.state.route) || {view:'home', date: nearestSundayISO()};
+  render();
+});
+// Covers refresh and closing the tab/app -- popstate above only fires for
+// back/forward navigation, not these, so this is the only way to catch an
+// editor being left unsaved that way.
+window.addEventListener('beforeunload', (e)=>{
+  if (route.view==='edit' && editDirtyCheck && editDirtyCheck()){
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 function render(){
   // Defensive: the edit view is only reachable through editor-gated buttons,
@@ -2050,7 +2112,7 @@ function renderHomeView(date){
     shareSetlist(date, ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean));
   });
   if (editor){
-    slot.querySelector('#btnAdd').addEventListener('click', ()=> go({view:'edit', songId:null, date}));
+    slot.querySelector('#btnAdd').addEventListener('click', ()=> goToEdit({view:'edit', songId:null, date}));
     slot.querySelector('#btnPublish').addEventListener('click', publishToGithub);
     slot.querySelector('#btnGhLogout').addEventListener('click', async ()=>{
       const ok = await confirmModal('Log out', `Log out ${getGhEditorName()}? You'll need your token again to make changes.`, 'Log out');
@@ -2262,6 +2324,20 @@ function renderEditView(songId){
   [fTitle, fKey, fDesc, bodyInput].forEach(el=> el.addEventListener('input', refreshPreview));
   refreshPreview();
 
+  // Snapshot of what's actually saved, so leaving the editor (back button,
+  // refresh, the Cancel button) can tell a real unsaved edit apart from
+  // just having opened the form -- see editDirtyCheck below.
+  const savedSnapshot = existing
+    ? { title: existing.title, key: songKeyValue(existing), desc: existing.description||'', body: existing.body }
+    : { title: '', key: fKey.value, desc: '', body: '' };
+  function isEditDirty(){
+    return fTitle.value !== savedSnapshot.title
+      || fKey.value !== savedSnapshot.key
+      || fDesc.value !== savedSnapshot.desc
+      || bodyInput.value !== savedSnapshot.body;
+  }
+  editDirtyCheck = isEditDirty;
+
   // Tracks whatever key the chart's chord letters currently actually match --
   // starts as the song's stored key (or the default for a new song), and
   // advances after each successful transpose so re-targeting a second time
@@ -2286,21 +2362,27 @@ function renderEditView(songId){
     toast(`Transposed to ${toLabel}`);
   });
 
-  slot.querySelector('#btnCancel').addEventListener('click', ()=> go(existing
-    ? {view:'song', songId: existing.id, date: cameFromDate}
-    : {view:'home', date: cameFromDate}));
+  slot.querySelector('#btnCancel').addEventListener('click', async ()=>{
+    if (isEditDirty()){
+      const ok = await confirmModal('Unsaved changes', "This song has changes that haven't been saved yet. Discard them?", 'Discard');
+      if (!ok) return;
+    }
+    editDirtyCheck = null;
+    goReplaceTop(existing ? {view:'song', songId: existing.id, date: cameFromDate} : {view:'home', date: cameFromDate});
+  });
   slot.querySelector('#btnSave').addEventListener('click', ()=>{
     const title = fTitle.value.trim();
     if (!title){ toast('Please enter a title'); fTitle.focus(); return; }
     const [ks, km, pf] = fKey.value.split(':').map(Number);
+    editDirtyCheck = null;
     if (existing){
       existing.title = title; existing.keySemitone = ks; existing.keyIsMinor = km; existing.keyPreferFlat = !!pf;
       existing.description = fDesc.value; existing.body = bodyInput.value; existing.updatedAt = Date.now();
-      saveState(); toast('Saved'); go({view:'song', songId: existing.id, date: cameFromDate});
+      saveState(); toast('Saved'); goReplaceTop({view:'song', songId: existing.id, date: cameFromDate});
     } else {
       const id = uid();
       STATE.songs.push({ id, title, keySemitone: ks, keyIsMinor: km, keyPreferFlat: !!pf, description: fDesc.value, body: bodyInput.value, createdAt: Date.now(), updatedAt: Date.now() });
-      saveState(); toast('Added'); go({view:'song', songId: id, date: cameFromDate});
+      saveState(); toast('Added'); goReplaceTop({view:'song', songId: id, date: cameFromDate});
     }
   });
   if (existing){
@@ -2311,7 +2393,8 @@ function renderEditView(songId){
       for (const d of Object.keys(STATE.setlists)){
         STATE.setlists[d] = STATE.setlists[d].filter(id=>id!==existing.id);
       }
-      saveState(); toast('Deleted'); go({view:'home', date: cameFromDate});
+      editDirtyCheck = null;
+      saveState(); toast('Deleted'); goReplaceTop({view:'home', date: cameFromDate});
     });
   }
 }
@@ -2334,7 +2417,9 @@ function renderSongView(songId){
     return keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
   }
 
-  const videoIds = extractYoutubeIds(song.body);
+  // A YouTube link is just as likely to be pasted into the description (a
+  // short "reference video" note) as into the body itself.
+  const videoIds = extractYoutubeIds(song.body + '\n' + (song.description||''));
   // A live iframe embed needs YouTube to see a real HTTP(S) Referer header,
   // which browsers only send from an http:/https: page -- never from a
   // local file: or content: origin (a file manager's "open with browser"
@@ -2424,7 +2509,7 @@ function renderSongView(songId){
   slot.querySelector('#keyBadgeBtn').addEventListener('click', openKeyModal);
   if (isEditorLoggedIn()){
     slot.querySelector('#editSongBtn').addEventListener('click', ()=>{
-      go({view:'edit', songId: song.id, date: route.date});
+      goToEdit({view:'edit', songId: song.id, date: route.date});
     });
   }
 
