@@ -448,18 +448,21 @@
   }
   .print-toolbar-hint{ font-size:12px; color:var(--muted); flex:1; min-width:120px; }
   .print-page-wrap{ display:flex; justify-content:center; padding:28px 16px 60px; }
-  /* A4 at 96dpi (210mm) -- the on-screen preview approximates real paper
-     size/margins so column count and font size look right before printing;
-     @media print below strips this back down to a plain flowing page and
-     lets the browser's own print engine (with its own @page A4 size) take
-     over the actual pagination. */
+  /* Sized in mm, matching @page{size:A4; margin:14mm} below exactly -- not
+     just visually (so the preview looks like real paper), but so the
+     on-screen content width used to compute where chord/lyric lines wrap
+     (see paintPrintPreview()'s use of wrapRows()) is the *same* width
+     they'll actually have on the printed page. A pixel-approximated
+     preview width that didn't quite match the real @page content width
+     would let a line get wrapped "safely" for the preview and still run
+     past the edge -- clipped, not wrapped -- once actually printed. */
   .print-root{
-    width:794px; min-height:1123px; background:#fff; color:#111; box-shadow:0 2px 16px rgba(0,0,0,.3);
-    padding:56px 48px; box-sizing:border-box;
+    width:210mm; min-height:297mm; background:#fff; color:#111; box-shadow:0 2px 16px rgba(0,0,0,.3);
+    padding:14mm; box-sizing:border-box;
   }
   .print-song{ white-space:pre; }
-  .print-song + .print-song{ break-before:page; margin-top:0; padding-top:56px; }
-  .print-song .row-title{ column-span:all; color:#111; font-weight:700; font-size:1.5em; margin-bottom:.1em; }
+  .print-song + .print-song{ break-before:page; margin-top:0; padding-top:14mm; }
+  .print-song .row-title{ column-span:all; color:#111; font-weight:700; font-size:1.5em; margin-bottom:.1em; white-space:normal; }
   .print-song .row-desc{ column-span:all; color:#333; font-style:italic; font-weight:400; margin-bottom:.9em; white-space:pre-wrap; font-size:.8em; }
   .print-song .row-section{ color:#111; font-weight:700; margin-top:1em; break-after:avoid; }
   .print-song .row-section:first-of-type{ margin-top:0; }
@@ -1884,16 +1887,16 @@ function wrapRows(rows, maxChars){
   }
   return out;
 }
-function measureMonoCharWidth(fontPx){
+function measureMonoCharWidth(fontSize, unit){
   const probe = document.createElement('span');
   probe.className = 'mono';
   probe.style.cssText = 'position:absolute; visibility:hidden; white-space:pre; top:-9999px;';
-  probe.style.fontSize = fontPx+'px';
+  probe.style.fontSize = fontSize+(unit||'px');
   probe.textContent = '0'.repeat(20);
   document.body.appendChild(probe);
   const w = probe.getBoundingClientRect().width / 20;
   document.body.removeChild(probe);
-  return w || fontPx*0.6;
+  return w || fontSize*0.6;
 }
 
 function buildChartColumns(container, colBlocks, boxWidth, colWidth, gap){
@@ -3045,15 +3048,33 @@ function paintPrintPreview(){
     root.innerHTML = `<div class="print-empty">No songs in this setlist.</div>`;
     return;
   }
+  // Chord/lyric lines are rendered white-space:pre (to keep chords aligned
+  // over the right syllable), which never wraps on its own -- a line wider
+  // than the column just runs past its edge and gets clipped instead. The
+  // on-screen "Wrap" fit mode already solves exactly this with wrapRows()
+  // (breaking a chord+lyric pair together, at the same character position,
+  // so the continuation line stays aligned); reused here at the print
+  // column's *real* rendered width rather than a hand-computed guess.
+  const charW = measureMonoCharWidth(prefs.fontSize, 'pt');
   songs.forEach(song=>{
     const songEl = document.createElement('div');
     songEl.className = 'print-song';
     songEl.style.fontSize = prefs.fontSize+'pt';
     songEl.style.lineHeight = String(prefs.lineSpacing);
     songEl.style.columnCount = prefs.columns;
-    songEl.style.columnGap = '28px';
-    rowsToChartDom(computeSongRows(song, 'original', null), songEl);
-    root.appendChild(songEl);
+    songEl.style.columnGap = CHART_COL_GAP+'px';
+    root.appendChild(songEl); // must be in the DOM before clientWidth means anything
+    const colWidth = prefs.columns===2 ? (songEl.clientWidth - CHART_COL_GAP)/2 : songEl.clientWidth;
+    const maxChars = Math.max(6, Math.floor(colWidth / charW));
+    const rows = computeSongRows(song, 'original', null);
+    // Title/description render column-span:all (the full page width, not
+    // one narrow column) and wrap normally via CSS, so they're kept out of
+    // the per-column character-count wrap below -- wrapping them to the
+    // narrow column's maxChars would fragment them far more than the width
+    // they actually have room for.
+    const headRows = rows.filter(r => r.cls==='row-title' || r.cls==='row-desc');
+    const bodyRows = rows.filter(r => r.cls!=='row-title' && r.cls!=='row-desc');
+    rowsToChartDom([...headRows, ...wrapRows(bodyRows, maxChars)], songEl);
   });
 }
 
