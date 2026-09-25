@@ -439,6 +439,46 @@
   .song-nav-wrap{ position:relative; }
   .song-nav-wrap .tap-zone{ width:44px; }
 
+  /* ---------- print preview ---------- */
+  #printPreview{ display:none; position:fixed; inset:0; z-index:120; background:#666; overflow-y:auto; }
+  #printPreview.open{ display:block; }
+  .print-toolbar{
+    position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--paper-line);
+  }
+  .print-toolbar-hint{ font-size:12px; color:var(--muted); flex:1; min-width:120px; }
+  .print-page-wrap{ display:flex; justify-content:center; padding:28px 16px 60px; }
+  /* A4 at 96dpi (210mm) -- the on-screen preview approximates real paper
+     size/margins so column count and font size look right before printing;
+     @media print below strips this back down to a plain flowing page and
+     lets the browser's own print engine (with its own @page A4 size) take
+     over the actual pagination. */
+  .print-root{
+    width:794px; min-height:1123px; background:#fff; color:#111; box-shadow:0 2px 16px rgba(0,0,0,.3);
+    padding:56px 48px; box-sizing:border-box;
+  }
+  .print-song{ white-space:pre; }
+  .print-song + .print-song{ break-before:page; margin-top:0; padding-top:56px; }
+  .print-song .row-title{ column-span:all; color:#111; font-weight:700; font-size:1.5em; margin-bottom:.1em; }
+  .print-song .row-desc{ column-span:all; color:#333; font-style:italic; font-weight:400; margin-bottom:.9em; white-space:pre-wrap; font-size:.8em; }
+  .print-song .row-section{ color:#111; font-weight:700; margin-top:1em; break-after:avoid; }
+  .print-song .row-section:first-of-type{ margin-top:0; }
+  .print-song .row-chord{ color:#111; font-weight:700; break-after:avoid; }
+  .print-song .row-lyric{ color:#111; font-weight:400; }
+  .print-song .row-blank{ height:.8em; }
+  .print-song .row-link{ white-space:normal; word-break:break-all; }
+  .print-song .row-link a{ color:#111; text-decoration:underline; }
+  .print-empty{ color:#666; font-style:italic; }
+  @media print{
+    #app, .modal-backdrop, .toast, #present{ display:none !important; }
+    #printPreview{ position:static; background:#fff; inset:auto; overflow:visible; }
+    .no-print{ display:none !important; }
+    .print-page-wrap{ padding:0; display:block; }
+    .print-root{ width:auto; min-height:0; box-shadow:none; padding:0; }
+    .print-song + .print-song{ padding-top:0; }
+    @page{ size:A4; margin:14mm; }
+  }
+
   /* ---------- modal ---------- */
   .modal-backdrop{
     position:fixed; inset:0; background:rgba(10,10,10,.45); display:none; align-items:center; justify-content:center; z-index:200; padding:20px;
@@ -502,6 +542,32 @@
     <div class="present-chart-wrap"><div class="present-chart mono" id="presentChart"></div></div>
     <button class="tap-zone left" id="presentPrev"><span class="tap-chevron">‹</span></button>
     <button class="tap-zone right" id="presentNext"><span class="tap-chevron">›</span></button>
+  </div>
+</div>
+
+<div id="printPreview">
+  <div class="print-toolbar no-print">
+    <button class="iconbtn" id="printClose" title="Close">← Close</button>
+    <div class="topbar-divider"></div>
+    <div class="seg" id="printColSeg" title="Columns">
+      <button data-col="1" title="1 column">1</button>
+      <button data-col="2" title="2 columns">2</button>
+    </div>
+    <div class="seg" id="printFontSeg" title="Print font size">
+      <button id="printFontDec" title="Smaller">A−</button>
+      <span class="font-size-label" id="printFontLabel"></span>
+      <button id="printFontInc" title="Larger">A+</button>
+    </div>
+    <div class="seg" id="printSpacingSeg" title="Line spacing">
+      <button id="printSpacingDec" title="Tighter">Line −</button>
+      <span class="font-size-label" id="printSpacingLabel"></span>
+      <button id="printSpacingInc" title="Looser">Line +</button>
+    </div>
+    <div class="print-toolbar-hint" id="printPublishHint" hidden></div>
+    <button class="iconbtn primary" id="printGo" title="Open your browser/device's print dialog -- choose a printer or Save as PDF there">Print / Save PDF</button>
+  </div>
+  <div class="print-page-wrap">
+    <div class="print-root mono" id="printRoot"></div>
   </div>
 </div>
 
@@ -1050,10 +1116,6 @@ function setLastPublishedSongs(songs){
 function publishedBaselineSongs(){
   return getLastPublishedSongs() || seedState().songs;
 }
-function hasUnpublishedChanges(){
-  if (!isEditorLoggedIn()) return false;
-  return songsSignature(STATE.songs) !== songsSignature(publishedBaselineSongs());
-}
 // Counts songs added/deleted locally (by id) since the published baseline,
 // for the +/🗑 button badges -- an in-place edit to an existing song shows
 // up in hasUnpublishedChanges() but isn't counted as either here.
@@ -1094,10 +1156,40 @@ function setlistsSignature(setlists){
   const dates = Object.keys(setlists||{}).filter(d => (setlists[d]||[]).length).sort();
   return JSON.stringify(dates.map(d => [d, setlists[d]]));
 }
+
+// Print layout (font size / columns / line spacing) is a *paper-format*
+// preference, not a screen one -- kept in its own STATE.printPrefs rather
+// than folded into STATE.settings specifically so it can be published the
+// same way songs/setlists are: whoever finalizes "how we print the Sunday
+// setlist" hits the same Publish button, and everyone else (including
+// viewers who never log in as an editor) then opens Print to that same
+// agreed layout instead of each reinventing it. Anyone can still nudge the
+// controls for their own one-off print -- only an editor's adjustment
+// sticks past a refresh and can be published, mirroring how local song/
+// setlist edits already work.
+const GH_LAST_PUBLISHED_PRINT_KEY = 'hopescore_gh_last_published_print_v1';
+function getLastPublishedPrintPrefs(){
+  try{
+    const raw = localStorage.getItem(GH_LAST_PUBLISHED_PRINT_KEY);
+    if (!raw) return null;
+    const { printPrefs, ts } = JSON.parse(raw);
+    if (Date.now() - ts > GH_LAST_PUBLISHED_TRUST_MS) return null;
+    return printPrefs;
+  }catch(e){ return null; }
+}
+function setLastPublishedPrintPrefs(printPrefs){
+  localStorage.setItem(GH_LAST_PUBLISHED_PRINT_KEY, JSON.stringify({ printPrefs, ts: Date.now() }));
+}
+function publishedBaselinePrintPrefs(){
+  return getLastPublishedPrintPrefs() || seedState().printPrefs;
+}
+function printPrefsSignature(p){ return JSON.stringify(p||{}); }
+
 function hasUnpublishedChanges(){
   if (!isEditorLoggedIn()) return false;
   return songsSignature(STATE.songs) !== songsSignature(publishedBaselineSongs())
-    || setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists());
+    || setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())
+    || printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs());
 }
 // A short human summary of what's unpublished, for the banner -- e.g.
 // "2 songs added, setlist updated" -- so an editor doesn't have to guess
@@ -1108,6 +1200,7 @@ function unpublishedChangesSummary(){
   if (added) parts.push(`${added} song${added>1?'s':''} added`);
   if (deleted) parts.push(`${deleted} song${deleted>1?'s':''} deleted`);
   if (setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())) parts.push('setlist updated');
+  if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())) parts.push('print settings updated');
   return parts.length ? parts.join(', ') : 'local changes';
 }
 
@@ -1130,8 +1223,8 @@ function loadState(){
       // last-cached one when offline (the service worker's network-first
       // strategy already handles that at the file level) -- only device
       // settings stay personal/local.
-      if (getGhToken()) return { songs: saved.songs || seedState().songs, setlists, settings: saved.settings || {} };
-      return { songs: seedState().songs, setlists: seedState().setlists, settings: saved.settings || {} };
+      if (getGhToken()) return { songs: saved.songs || seedState().songs, setlists, printPrefs: saved.printPrefs || seedState().printPrefs, settings: saved.settings || {} };
+      return { songs: seedState().songs, setlists: seedState().setlists, printPrefs: seedState().printPrefs, settings: saved.settings || {} };
     }
   }catch(e){}
   return seedState();
@@ -1443,11 +1536,19 @@ function seedState(){
   ]
 };
   /* SEED_SETLISTS_END */
+  /* SEED_PRINT_START */
+  const seedPrintPrefs = {
+  "fontSize": 10,
+  "columns": 2,
+  "lineSpacing": 1.3
+};
+  /* SEED_PRINT_END */
   const now = Date.now();
   for (const s of seedSongs){ s.createdAt = now; s.updatedAt = now; }
   return {
     songs: seedSongs,
     setlists: seedSetlists,
+    printPrefs: seedPrintPrefs,
     settings: {},
   };
 }
@@ -1476,6 +1577,30 @@ function setFontSize(view, songId, px){
   const [lo, hi] = FONT_SIZE_RANGE[view] || [8, 72];
   STATE.settings.fontSizeBySongView = STATE.settings.fontSizeBySongView || {};
   STATE.settings.fontSizeBySongView[`${view}:${songId}`] = Math.max(lo, Math.min(hi, px));
+  saveState();
+}
+// Print layout prefs -- see the STATE.printPrefs comment above
+// publishedBaselinePrintPrefs() for why these live outside STATE.settings.
+// Deliberately doesn't fall back to any of the screen view's font/column
+// settings: paper and screen call for different defaults (print wants a
+// much smaller point size than a comfortable screen size), and the two are
+// meant to be adjustable independently of each other.
+const PRINT_FONT_RANGE = [7, 16];
+const PRINT_SPACING_RANGE = [1.0, 2.0];
+const PRINT_PREFS_DEFAULT = { fontSize: 10, columns: 2, lineSpacing: 1.3 };
+function getPrintPrefs(){ return STATE.printPrefs || PRINT_PREFS_DEFAULT; }
+function setPrintFontSize(pt){
+  const [lo, hi] = PRINT_FONT_RANGE;
+  STATE.printPrefs = { ...getPrintPrefs(), fontSize: Math.max(lo, Math.min(hi, pt)) };
+  saveState();
+}
+function setPrintColumns(n){
+  STATE.printPrefs = { ...getPrintPrefs(), columns: n===2 ? 2 : 1 };
+  saveState();
+}
+function setPrintLineSpacing(v){
+  const [lo, hi] = PRINT_SPACING_RANGE;
+  STATE.printPrefs = { ...getPrintPrefs(), lineSpacing: Math.round(Math.max(lo, Math.min(hi, v)) * 10) / 10 };
   saveState();
 }
 // Whether 2+ consecutive blank lines collapse into one gap. On by default;
@@ -2039,6 +2164,7 @@ function renderHomeView(date){
     <div class="topbar-divider"></div>
     <button class="iconbtn primary" id="btnPresentHome" title="Present fullscreen">▶</button>
     <button class="iconbtn" id="btnShareSetlist" title="Share this setlist"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
+    <button class="iconbtn" id="btnPrintSetlist" title="Print this setlist">🖨</button>
     ${editor ? `
     <button class="iconbtn primary" id="btnAdd" title="New song${pending.added? ` -- ${pending.added} added locally, not yet published`:''}">+${pending.added? `<span class="btn-badge">${pending.added}</span>` : ''}</button>
     <button class="iconbtn" id="btnPublish" title="Publish the current song list and setlist to GitHub">📤</button>
@@ -2069,12 +2195,15 @@ function renderHomeView(date){
 
   const btnPresentHome = slot.querySelector('#btnPresentHome');
   const btnShareSetlist = slot.querySelector('#btnShareSetlist');
+  const btnPrintSetlist = slot.querySelector('#btnPrintSetlist');
+  btnPrintSetlist.addEventListener('click', ()=> openPrintPreview(date));
 
   function paintSetlist(){
     const ids = STATE.setlists[date] || [];
     const songs = ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
     btnPresentHome.disabled = songs.length===0;
     btnShareSetlist.disabled = songs.length===0;
+    btnPrintSetlist.disabled = songs.length===0;
     setlistEl.innerHTML = '';
     if (songs.length===0){
       setlistEl.innerHTML = `<div class="empty-state">${editor ? 'No songs in this setlist yet -- add some from the list below.' : 'No setlist for this date yet.'}</div>`;
@@ -2856,6 +2985,80 @@ window.addEventListener('resize', ()=>{
 });
 
 /* =========================================================================
+   8b. Print preview -- a dedicated, publishable paper-format layout for a
+   date's setlist. Deliberately its own thing rather than reusing the
+   on-screen chord view's columns/fitMode/fontSize or Present's: paper and
+   screen want different defaults, and per the request that led to this,
+   the two are meant to be adjustable independently of each other. Actual
+   printing just calls window.print() -- the browser/device's own print
+   dialog is also how "Save as PDF" is normally reached, so there's no
+   need for a PDF-generation library.
+   ========================================================================= */
+const printPreviewEl = document.getElementById('printPreview');
+let printDate = null;
+
+function openPrintPreview(date){
+  printDate = date;
+  printPreviewEl.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  paintPrintPreview();
+}
+function closePrintPreview(){
+  printPreviewEl.classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function paintPrintPreview(){
+  const prefs = getPrintPrefs();
+  document.querySelectorAll('#printColSeg button').forEach(b=> b.classList.toggle('active', Number(b.dataset.col)===prefs.columns));
+  document.getElementById('printFontLabel').textContent = prefs.fontSize+'pt';
+  document.getElementById('printSpacingLabel').textContent = prefs.lineSpacing.toFixed(1)+'x';
+
+  // Anyone can nudge these controls for their own one-off print, but only
+  // an editor's adjustment can become the shared default -- surface that
+  // it's still just a local, unpublished tweak rather than silently
+  // implying it already applies to everyone else's printouts.
+  const hint = document.getElementById('printPublishHint');
+  const dirty = isEditorLoggedIn() && printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs());
+  hint.hidden = !dirty;
+  if (dirty) hint.textContent = "Layout changed -- Publish from the setlist screen to make this everyone's default.";
+
+  const root = document.getElementById('printRoot');
+  root.innerHTML = '';
+  const ids = STATE.setlists[printDate] || [];
+  const songs = ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
+  if (!songs.length){
+    root.innerHTML = `<div class="print-empty">No songs in this setlist.</div>`;
+    return;
+  }
+  songs.forEach(song=>{
+    const songEl = document.createElement('div');
+    songEl.className = 'print-song';
+    songEl.style.fontSize = prefs.fontSize+'pt';
+    songEl.style.lineHeight = String(prefs.lineSpacing);
+    songEl.style.columnCount = prefs.columns;
+    songEl.style.columnGap = '28px';
+    rowsToChartDom(computeSongRows(song, 'original', null), songEl);
+    root.appendChild(songEl);
+  });
+}
+
+document.getElementById('printClose').addEventListener('click', closePrintPreview);
+document.getElementById('printGo').addEventListener('click', ()=> window.print());
+document.getElementById('printColSeg').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button[data-col]'); if (!btn) return;
+  setPrintColumns(Number(btn.dataset.col));
+  paintPrintPreview();
+});
+document.getElementById('printFontDec').addEventListener('click', ()=>{ setPrintFontSize(getPrintPrefs().fontSize - 1); paintPrintPreview(); });
+document.getElementById('printFontInc').addEventListener('click', ()=>{ setPrintFontSize(getPrintPrefs().fontSize + 1); paintPrintPreview(); });
+document.getElementById('printSpacingDec').addEventListener('click', ()=>{ setPrintLineSpacing(getPrintPrefs().lineSpacing - 0.1); paintPrintPreview(); });
+document.getElementById('printSpacingInc').addEventListener('click', ()=>{ setPrintLineSpacing(getPrintPrefs().lineSpacing + 0.1); paintPrintPreview(); });
+document.addEventListener('keydown', (e)=>{
+  if (e.key==='Escape' && printPreviewEl.classList.contains('open')) closePrintPreview();
+});
+
+/* =========================================================================
    9. GitHub publish (admin) -- lets a maintainer push the current song list
    straight to the GitHub repo behind this deployment, from inside the app,
    using their own personal access token stored only in this browser (never
@@ -2969,7 +3172,7 @@ async function publishToGithub(){
   const token = getGhToken();
   const editorName = getGhEditorName();
   if (!token || !editorName){ openGhSettingsModal(()=> publishToGithub()); return; }
-  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list and setlist -- live for everyone who opens the hosted site. Continue?`, 'Publish');
+  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list, setlist, and print layout -- live for everyone who opens the hosted site. Continue?`, 'Publish');
   if (!ok) return;
   toast('Publishing…');
   try{
@@ -3007,6 +3210,18 @@ async function publishToGithub(){
     const slBlock = `${slStartMarker}\n  const seedSetlists = ${JSON.stringify(mergedSetlists, null, 2)};\n  ${slEndMarker}`;
     newText = newText.slice(0, slStartIdx) + slBlock + newText.slice(slEndIdx + slEndMarker.length);
 
+    // Print prefs are a single small shared object (not per-date like
+    // setlists), so last editor to publish simply wins -- no merge needed.
+    const pStartMarker = '/* SEED_PRINT_START */';
+    const pEndMarker = '/* SEED_PRINT_END */';
+    const pStartIdx = newText.indexOf(pStartMarker);
+    const pEndIdx = newText.indexOf(pEndMarker);
+    if (pStartIdx === -1 || pEndIdx === -1 || pEndIdx < pStartIdx){
+      throw new Error('Could not find the print settings section in the file on GitHub');
+    }
+    const pBlock = `${pStartMarker}\n  const seedPrintPrefs = ${JSON.stringify(getPrintPrefs(), null, 2)};\n  ${pEndMarker}`;
+    newText = newText.slice(0, pStartIdx) + pBlock + newText.slice(pEndIdx + pEndMarker.length);
+
     // committer stays whoever the shared token belongs to (GitHub requires
     // that to match the authenticated account); author is the actual editor,
     // stamped by name only -- a made-up but stable local email keeps commits
@@ -3035,6 +3250,7 @@ async function publishToGithub(){
     }
     setLastPublishedSongs(STATE.songs);
     setLastPublishedSetlists(mergedSetlists);
+    setLastPublishedPrintPrefs(getPrintPrefs());
     // Adopt the merged result locally too, so this editor immediately sees
     // whatever anyone else had already published (e.g. another editor's
     // songs on the same date's setlist) rather than just their own picks.
