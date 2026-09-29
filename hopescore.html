@@ -2219,11 +2219,20 @@ function renderUnpubBanner(){
     <button class="iconbtn danger" id="banDiscard">Discard</button>`;
   banner.querySelector('#banPublish').addEventListener('click', publishToGithub);
   banner.querySelector('#banDiscard').addEventListener('click', async ()=>{
-    const ok = await confirmModal('Discard local changes', "Replace your local songs and setlist with the currently published version? This can't be undone.", 'Discard');
+    const ok = await confirmModal('Discard local changes', "Replace your local songs, setlist, and print layout with the currently published version? This can't be undone.", 'Discard');
     if (!ok) return;
-    const seed = seedState();
-    STATE.songs = seed.songs;
-    STATE.setlists = seed.setlists;
+    // publishedBaseline*() (the actual last-known-published values, tracked
+    // separately per category -- see setLastPublished*()) rather than
+    // seedState() (this page load's baked-in seed, which is stale for up to
+    // ~5 minutes right after a publish, per GH_LAST_PUBLISHED_TRUST_MS): this
+    // banner needs to revert to the same baseline hasUnpublishedChanges()
+    // itself compares against, or discarding here wouldn't actually clear it.
+    // printPrefs was missing here entirely until this fix -- a print-layout-
+    // only tweak (no undo of its own, unlike everything else) meant this
+    // button silently failed to fully clear the banner it lives on.
+    STATE.songs = publishedBaselineSongs();
+    STATE.setlists = publishedBaselineSetlists();
+    STATE.printPrefs = publishedBaselinePrintPrefs();
     saveState();
     render();
     toast('Discarded -- back to the published version');
