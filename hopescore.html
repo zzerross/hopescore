@@ -495,12 +495,22 @@
   .modal p.msg{ color:var(--muted); font-size:13.5px; margin:0 0 14px; line-height:1.5; }
   .modal input{ width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--paper-line); background:var(--paper); color:var(--ink); font-size:14px; margin-bottom:10px; }
   .modal-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
-  .publish-cat-list{ display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
-  .publish-cat-row{
-    display:flex; align-items:flex-start; padding:9px 8px; border-radius:8px;
+  .changes-top-actions{ justify-content:flex-start; margin:0 0 14px; }
+  .change-item-list{
+    display:flex; flex-direction:column; gap:1px; margin-bottom:6px;
+    max-height:280px; overflow-y:auto; border-top:1px solid var(--paper-line);
   }
-  .publish-cat-text{ display:flex; flex-direction:column; font-size:13.5px; }
-  .publish-cat-detail{ color:var(--muted); font-size:12px; }
+  .change-item{
+    display:flex; align-items:center; gap:10px; padding:7px 4px; font-size:13.5px;
+    border-bottom:1px solid var(--paper-line);
+  }
+  .change-item-icon{
+    width:16px; flex-shrink:0; text-align:center; font-weight:700; font-family:'Share Tech Mono', monospace;
+  }
+  .change-item-add .change-item-icon{ color:var(--accent); }
+  .change-item-remove .change-item-icon{ color:var(--danger); }
+  .change-item-edit .change-item-icon{ color:var(--muted); }
+  .change-item-text{ overflow-wrap:anywhere; }
 
   .toast{
     position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(8px);
@@ -1227,29 +1237,47 @@ function unpublishedChangesSummary(){
   if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())) parts.push('print settings updated');
   return parts.length ? parts.join(', ') : 'local changes';
 }
-// Breaks the unpublished diff into broad, independently publishable/
-// discardable categories -- only the ones that actually differ from the
-// published baseline. Backs the publish-selection modal: an editor can
-// publish just the songs while discarding an in-progress print-layout
-// experiment, say, instead of it being all-or-nothing.
-function unpublishedCategories(){
-  const cats = [];
-  if (songsSignature(STATE.songs) !== songsSignature(publishedBaselineSongs())){
-    const { added, deleted } = pendingChangeCounts();
-    const edited = editedSongsCount();
-    const parts = [];
-    if (added) parts.push(`${added} added`);
-    if (edited) parts.push(`${edited} edited`);
-    if (deleted) parts.push(`${deleted} deleted`);
-    cats.push({ key:'songs', label:'Songs', detail: parts.join(', ') || 'changed' });
+// Breaks the unpublished diff into individual, itemized lines -- one per
+// added/removed/edited song, one per date whose setlist changed (itself
+// broken into which songs were added/removed from it, or "reordered" when
+// the same songs just moved), and one for print layout (a single shared
+// object, not itemizable further). Backs the Changes modal's list -- each
+// item tagged 'add'/'remove'/'edit' for its +/−/✎ icon.
+function unpublishedChangeItems(){
+  const items = [];
+  const baseline = publishedBaselineSongs();
+  const baseMap = new Map(baseline.map(s => [s.id, s]));
+  const localMap = new Map(STATE.songs.map(s => [s.id, s]));
+  const norm = s => JSON.stringify({ title:s.title, keySemitone:s.keySemitone, keyIsMinor:s.keyIsMinor, keyPreferFlat:s.keyPreferFlat, description:s.description, body:s.body, videoKey:s.videoKey||'' });
+  for (const s of STATE.songs){
+    const b = baseMap.get(s.id);
+    if (!b) items.push({ type:'add', text: `Song: ${splitTitleArtist(s.title).main}` });
+    else if (norm(s) !== norm(b)) items.push({ type:'edit', text: `Song: ${splitTitleArtist(s.title).main}` });
   }
-  if (setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())){
-    cats.push({ key:'setlists', label:'Setlist', detail:'Updated' });
+  for (const b of baseline){
+    if (!localMap.has(b.id)) items.push({ type:'remove', text: `Song: ${splitTitleArtist(b.title).main}` });
+  }
+  const baselineSetlists = publishedBaselineSetlists();
+  const dates = new Set([...Object.keys(STATE.setlists||{}), ...Object.keys(baselineSetlists||{})]);
+  for (const d of [...dates].sort()){
+    const local = STATE.setlists[d] || [];
+    const base = baselineSetlists[d] || [];
+    if (JSON.stringify(local) === JSON.stringify(base)) continue;
+    const localSet = new Set(local), baseSet = new Set(base);
+    const added = local.filter(id => !baseSet.has(id));
+    const removed = base.filter(id => !localSet.has(id));
+    const songTitle = id => { const s = localMap.get(id) || baseMap.get(id); return s ? splitTitleArtist(s.title).main : id; };
+    if (!added.length && !removed.length){
+      items.push({ type:'edit', text: `Setlist ${formatDateHeading(d)}: reordered` });
+    } else {
+      for (const id of added) items.push({ type:'add', text: `Setlist ${formatDateHeading(d)}: ${songTitle(id)}` });
+      for (const id of removed) items.push({ type:'remove', text: `Setlist ${formatDateHeading(d)}: ${songTitle(id)}` });
+    }
   }
   if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())){
-    cats.push({ key:'print', label:'Print layout', detail:'Font size / columns / line spacing changed' });
+    items.push({ type:'edit', text:'Print layout' });
   }
-  return cats;
+  return items;
 }
 
 function loadState(){
@@ -1763,27 +1791,42 @@ function confirmModal(title, message, confirmLabel='Delete'){
     document.getElementById('modalOk').onclick = ()=>{ closeModal(); resolve(true); };
   });
 }
-// Read-only: lets an editor see exactly what Publish/Discard are about to
-// act on before committing to either -- a plain list, no checkboxes, no
-// decision forced. Just closes; doesn't resolve to anything callers need.
+// The single entry point from the banner: an itemized, one-line-per-change
+// list (each tagged with a +/−/✎ icon for added/removed/edited), with
+// Discard All and Publish sitting right above it -- acting on everything,
+// same as the banner's old separate buttons, just consolidated behind one
+// "Changes" click instead of three buttons competing for space in the
+// banner itself.
 function openChangesModal(){
-  const categories = unpublishedCategories();
+  const items = unpublishedChangeItems();
+  const ICONS = { add:'+', remove:'−', edit:'✎' };
   modalBox.style.maxWidth = '420px';
   modalBox.innerHTML = `
     <h3>Unpublished changes</h3>
-    <p class="msg">${categories.length ? "What's different from the currently published version:" : 'Nothing unpublished right now.'}</p>
-    ${categories.length ? `
-    <div class="publish-cat-list">
-      ${categories.map(c => `
-        <div class="publish-cat-row">
-          <span class="publish-cat-text"><strong>${escapeHtml(c.label)}</strong><span class="publish-cat-detail">${escapeHtml(c.detail)}</span></span>
+    ${items.length ? `
+    <div class="modal-actions changes-top-actions">
+      <button class="iconbtn danger" id="modalDiscard">Discard All</button>
+      <button class="iconbtn primary" id="modalPublish">Publish</button>
+    </div>
+    <div class="change-item-list">
+      ${items.map(it => `
+        <div class="change-item change-item-${it.type}">
+          <span class="change-item-icon">${ICONS[it.type]}</span>
+          <span class="change-item-text">${escapeHtml(it.text)}</span>
         </div>`).join('')}
-    </div>` : ''}
+    </div>` : `<p class="msg">Nothing unpublished right now.</p>`}
     <div class="modal-actions">
-      <button class="iconbtn primary" id="modalOk">Close</button>
+      <button class="iconbtn" id="modalOk">Close</button>
     </div>`;
   modalBackdrop.classList.add('open');
   document.getElementById('modalOk').onclick = closeModal;
+  if (items.length){
+    document.getElementById('modalPublish').onclick = ()=>{ closeModal(); publishToGithub(); };
+    document.getElementById('modalDiscard').onclick = async ()=>{
+      const did = await discardAllLocalChanges();
+      if (did){ closeModal(); render(); }
+    };
+  }
 }
 let toastTimer=null;
 function toast(msg){
@@ -2197,36 +2240,31 @@ function renderTopbar(){
 
 // An editor with any unpublished song or setlist change sees this at the
 // top of the home page.
+// publishedBaseline*() (the actual last-known-published values, tracked
+// separately per category -- see setLastPublished*()) rather than
+// seedState() (this page load's baked-in seed, which is stale for up to
+// ~5 minutes right after a publish, per GH_LAST_PUBLISHED_TRUST_MS): a
+// discard needs to land on the exact baseline hasUnpublishedChanges()
+// itself compares against, or it can leave something (print layout, since
+// it has no undo of its own) still flagged unpublished afterward.
+async function discardAllLocalChanges(){
+  const ok = await confirmModal('Discard local changes', "Replace your local songs, setlist, and print layout with the currently published version? This can't be undone.", 'Discard');
+  if (!ok) return false;
+  STATE.songs = publishedBaselineSongs();
+  STATE.setlists = publishedBaselineSetlists();
+  STATE.printPrefs = publishedBaselinePrintPrefs();
+  saveState();
+  toast('Discarded -- back to the published version');
+  return true;
+}
 function renderUnpubBanner(){
   if (!isEditorLoggedIn() || !hasUnpublishedChanges()) return null;
   const banner = document.createElement('div');
   banner.className = 'unpub-banner';
   banner.innerHTML = `
-    <span>You have unpublished changes.</span>
-    <button class="iconbtn" id="banChanges">Changes</button>
-    <button class="iconbtn danger" id="banDiscard">Discard</button>
-    <button class="iconbtn primary" id="banPublish">Publish now</button>`;
+    <span>You have unpublished</span>
+    <button class="iconbtn" id="banChanges">Changes</button>`;
   banner.querySelector('#banChanges').addEventListener('click', openChangesModal);
-  banner.querySelector('#banPublish').addEventListener('click', publishToGithub);
-  banner.querySelector('#banDiscard').addEventListener('click', async ()=>{
-    const ok = await confirmModal('Discard local changes', "Replace your local songs, setlist, and print layout with the currently published version? This can't be undone.", 'Discard');
-    if (!ok) return;
-    // publishedBaseline*() (the actual last-known-published values, tracked
-    // separately per category -- see setLastPublished*()) rather than
-    // seedState() (this page load's baked-in seed, which is stale for up to
-    // ~5 minutes right after a publish, per GH_LAST_PUBLISHED_TRUST_MS): this
-    // banner needs to revert to the same baseline hasUnpublishedChanges()
-    // itself compares against, or discarding here wouldn't actually clear it.
-    // printPrefs was missing here entirely until this fix -- a print-layout-
-    // only tweak (no undo of its own, unlike everything else) meant this
-    // button silently failed to fully clear the banner it lives on.
-    STATE.songs = publishedBaselineSongs();
-    STATE.setlists = publishedBaselineSetlists();
-    STATE.printPrefs = publishedBaselinePrintPrefs();
-    saveState();
-    render();
-    toast('Discarded -- back to the published version');
-  });
   return banner;
 }
 
