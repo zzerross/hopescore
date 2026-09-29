@@ -495,6 +495,14 @@
   .modal p.msg{ color:var(--muted); font-size:13.5px; margin:0 0 14px; line-height:1.5; }
   .modal input{ width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--paper-line); background:var(--paper); color:var(--ink); font-size:14px; margin-bottom:10px; }
   .modal-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+  .publish-cat-list{ display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
+  .publish-cat-row{
+    display:flex; align-items:flex-start; gap:10px; padding:9px 8px; border-radius:8px; cursor:pointer;
+  }
+  .publish-cat-row:hover{ background:var(--paper); }
+  .publish-cat-row input[type=checkbox]{ width:auto; margin:3px 0 0; padding:0; flex-shrink:0; }
+  .publish-cat-text{ display:flex; flex-direction:column; font-size:13.5px; }
+  .publish-cat-detail{ color:var(--muted); font-size:12px; }
 
   .toast{
     position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(8px);
@@ -1132,6 +1140,19 @@ function pendingChangeCounts(){
     deleted: baseline.filter(s => !localIds.has(s.id)).length,
   };
 }
+// Songs present in both the baseline and locally, but with different
+// content -- for the publish-selection modal's "N edited" detail text.
+function editedSongsCount(){
+  const baseline = publishedBaselineSongs();
+  const baseMap = new Map(baseline.map(s => [s.id, s]));
+  const norm = s => JSON.stringify({ title:s.title, keySemitone:s.keySemitone, keyIsMinor:s.keyIsMinor, keyPreferFlat:s.keyPreferFlat, description:s.description, body:s.body, videoKey:s.videoKey||'' });
+  let n = 0;
+  for (const s of STATE.songs){
+    const b = baseMap.get(s.id);
+    if (b && norm(s) !== norm(b)) n++;
+  }
+  return n;
+}
 
 // Setlists are keyed by date ("YYYY-MM-DD", normally a Sunday) and are
 // shared/published data too -- multiple editors build the same week's
@@ -1205,6 +1226,30 @@ function unpublishedChangesSummary(){
   if (setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())) parts.push('setlist updated');
   if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())) parts.push('print settings updated');
   return parts.length ? parts.join(', ') : 'local changes';
+}
+// Breaks the unpublished diff into broad, independently publishable/
+// discardable categories -- only the ones that actually differ from the
+// published baseline. Backs the publish-selection modal: an editor can
+// publish just the songs while discarding an in-progress print-layout
+// experiment, say, instead of it being all-or-nothing.
+function unpublishedCategories(){
+  const cats = [];
+  if (songsSignature(STATE.songs) !== songsSignature(publishedBaselineSongs())){
+    const { added, deleted } = pendingChangeCounts();
+    const edited = editedSongsCount();
+    const parts = [];
+    if (added) parts.push(`${added} added`);
+    if (edited) parts.push(`${edited} edited`);
+    if (deleted) parts.push(`${deleted} deleted`);
+    cats.push({ key:'songs', label:'Songs', detail: parts.join(', ') || 'changed' });
+  }
+  if (setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())){
+    cats.push({ key:'setlists', label:'Setlist', detail:'Updated' });
+  }
+  if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())){
+    cats.push({ key:'print', label:'Print layout', detail:'Font size / columns / line spacing changed' });
+  }
+  return cats;
 }
 
 function loadState(){
@@ -1716,6 +1761,40 @@ function confirmModal(title, message, confirmLabel='Delete'){
     modalBackdrop.classList.add('open');
     document.getElementById('modalCancel').onclick = ()=>{ closeModal(); resolve(false); };
     document.getElementById('modalOk').onclick = ()=>{ closeModal(); resolve(true); };
+  });
+}
+// Lets an editor publish some categories of unpublished change while
+// discarding others in the same action, instead of Publish being all-or-
+// nothing -- e.g. publish a song edit but discard a print-layout experiment.
+// Resolves to a Set of the checked category keys (all checked by default,
+// matching plain "publish everything"), or null if the whole thing was
+// canceled (nothing published, nothing discarded either).
+function openPublishSelectionModal(categories){
+  return new Promise((resolve)=>{
+    modalBox.style.maxWidth = '420px';
+    const selected = new Set(categories.map(c=>c.key));
+    modalBox.innerHTML = `
+      <h3>Publish to GitHub</h3>
+      <p class="msg">Choose what to publish live to ${escapeHtml(GH_REPO_OWNER)}/${escapeHtml(GH_REPO_NAME)}. Anything left unchecked is discarded instead -- reverted on this device to the last published version.</p>
+      <div class="publish-cat-list">
+        ${categories.map(c => `
+          <label class="publish-cat-row">
+            <input type="checkbox" data-key="${escapeHtml(c.key)}" checked>
+            <span class="publish-cat-text"><strong>${escapeHtml(c.label)}</strong><span class="publish-cat-detail">${escapeHtml(c.detail)}</span></span>
+          </label>`).join('')}
+      </div>
+      <div class="modal-actions">
+        <button class="iconbtn" id="modalCancel">Cancel</button>
+        <button class="iconbtn primary" id="modalOk">Publish selected</button>
+      </div>`;
+    modalBackdrop.classList.add('open');
+    modalBox.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+      cb.addEventListener('change', ()=>{
+        if (cb.checked) selected.add(cb.dataset.key); else selected.delete(cb.dataset.key);
+      });
+    });
+    document.getElementById('modalCancel').onclick = ()=>{ closeModal(); resolve(null); };
+    document.getElementById('modalOk').onclick = ()=>{ closeModal(); resolve(selected); };
   });
 }
 let toastTimer=null;
@@ -3215,8 +3294,23 @@ async function publishToGithub(){
   const token = getGhToken();
   const editorName = getGhEditorName();
   if (!token || !editorName){ openGhSettingsModal(()=> publishToGithub()); return; }
-  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list, setlist, and print layout -- live for everyone who opens the hosted site. Continue?`, 'Publish');
-  if (!ok) return;
+  if (!hasUnpublishedChanges()){ toast('Nothing to publish'); return; }
+  const categories = unpublishedCategories();
+  const selected = await openPublishSelectionModal(categories);
+  if (!selected) return; // canceled outright -- nothing published, nothing discarded
+  // Anything left unchecked is discarded here: reverted locally to the
+  // published baseline, same effect as the editor's own Cancel/Discard for
+  // a single song edit, just scoped to a whole category at once. The
+  // publish step below just ships whatever's currently in STATE, so this
+  // is all it takes -- no separate "don't publish this part" branching.
+  for (const c of categories){
+    if (selected.has(c.key)) continue;
+    if (c.key === 'songs') STATE.songs = publishedBaselineSongs();
+    else if (c.key === 'setlists') STATE.setlists = publishedBaselineSetlists();
+    else if (c.key === 'print') STATE.printPrefs = publishedBaselinePrintPrefs();
+  }
+  saveState();
+  if (selected.size === 0){ toast('Discarded'); render(); return; }
   toast('Publishing…');
   try{
     const apiBase = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/contents/${GH_FILE_PATH}`;
