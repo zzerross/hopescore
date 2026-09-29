@@ -497,10 +497,8 @@
   .modal-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
   .publish-cat-list{ display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
   .publish-cat-row{
-    display:flex; align-items:flex-start; gap:10px; padding:9px 8px; border-radius:8px; cursor:pointer;
+    display:flex; align-items:flex-start; padding:9px 8px; border-radius:8px;
   }
-  .publish-cat-row:hover{ background:var(--paper); }
-  .publish-cat-row input[type=checkbox]{ width:auto; margin:3px 0 0; padding:0; flex-shrink:0; }
   .publish-cat-text{ display:flex; flex-direction:column; font-size:13.5px; }
   .publish-cat-detail{ color:var(--muted); font-size:12px; }
 
@@ -1221,7 +1219,9 @@ function hasUnpublishedChanges(){
 function unpublishedChangesSummary(){
   const parts = [];
   const { added, deleted } = pendingChangeCounts();
+  const edited = editedSongsCount();
   if (added) parts.push(`${added} song${added>1?'s':''} added`);
+  if (edited) parts.push(`${edited} song${edited>1?'s':''} edited`);
   if (deleted) parts.push(`${deleted} song${deleted>1?'s':''} deleted`);
   if (setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())) parts.push('setlist updated');
   if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())) parts.push('print settings updated');
@@ -1763,39 +1763,27 @@ function confirmModal(title, message, confirmLabel='Delete'){
     document.getElementById('modalOk').onclick = ()=>{ closeModal(); resolve(true); };
   });
 }
-// Lets an editor publish some categories of unpublished change while
-// discarding others in the same action, instead of Publish being all-or-
-// nothing -- e.g. publish a song edit but discard a print-layout experiment.
-// Resolves to a Set of the checked category keys (all checked by default,
-// matching plain "publish everything"), or null if the whole thing was
-// canceled (nothing published, nothing discarded either).
-function openPublishSelectionModal(categories){
-  return new Promise((resolve)=>{
-    modalBox.style.maxWidth = '420px';
-    const selected = new Set(categories.map(c=>c.key));
-    modalBox.innerHTML = `
-      <h3>Publish to GitHub</h3>
-      <p class="msg">Choose what to publish live to ${escapeHtml(GH_REPO_OWNER)}/${escapeHtml(GH_REPO_NAME)}. Anything left unchecked is discarded instead -- reverted on this device to the last published version.</p>
-      <div class="publish-cat-list">
-        ${categories.map(c => `
-          <label class="publish-cat-row">
-            <input type="checkbox" data-key="${escapeHtml(c.key)}" checked>
-            <span class="publish-cat-text"><strong>${escapeHtml(c.label)}</strong><span class="publish-cat-detail">${escapeHtml(c.detail)}</span></span>
-          </label>`).join('')}
-      </div>
-      <div class="modal-actions">
-        <button class="iconbtn" id="modalCancel">Cancel</button>
-        <button class="iconbtn primary" id="modalOk">Publish selected</button>
-      </div>`;
-    modalBackdrop.classList.add('open');
-    modalBox.querySelectorAll('input[type=checkbox]').forEach(cb=>{
-      cb.addEventListener('change', ()=>{
-        if (cb.checked) selected.add(cb.dataset.key); else selected.delete(cb.dataset.key);
-      });
-    });
-    document.getElementById('modalCancel').onclick = ()=>{ closeModal(); resolve(null); };
-    document.getElementById('modalOk').onclick = ()=>{ closeModal(); resolve(selected); };
-  });
+// Read-only: lets an editor see exactly what Publish/Discard are about to
+// act on before committing to either -- a plain list, no checkboxes, no
+// decision forced. Just closes; doesn't resolve to anything callers need.
+function openChangesModal(){
+  const categories = unpublishedCategories();
+  modalBox.style.maxWidth = '420px';
+  modalBox.innerHTML = `
+    <h3>Unpublished changes</h3>
+    <p class="msg">${categories.length ? "What's different from the currently published version:" : 'Nothing unpublished right now.'}</p>
+    ${categories.length ? `
+    <div class="publish-cat-list">
+      ${categories.map(c => `
+        <div class="publish-cat-row">
+          <span class="publish-cat-text"><strong>${escapeHtml(c.label)}</strong><span class="publish-cat-detail">${escapeHtml(c.detail)}</span></span>
+        </div>`).join('')}
+    </div>` : ''}
+    <div class="modal-actions">
+      <button class="iconbtn primary" id="modalOk">Close</button>
+    </div>`;
+  modalBackdrop.classList.add('open');
+  document.getElementById('modalOk').onclick = closeModal;
 }
 let toastTimer=null;
 function toast(msg){
@@ -2215,8 +2203,10 @@ function renderUnpubBanner(){
   banner.className = 'unpub-banner';
   banner.innerHTML = `
     <span>You have unpublished changes: ${unpublishedChangesSummary()}.</span>
-    <button class="iconbtn primary" id="banPublish">Publish now</button>
-    <button class="iconbtn danger" id="banDiscard">Discard</button>`;
+    <button class="iconbtn" id="banChanges">Changes</button>
+    <button class="iconbtn danger" id="banDiscard">Discard</button>
+    <button class="iconbtn primary" id="banPublish">Publish now</button>`;
+  banner.querySelector('#banChanges').addEventListener('click', openChangesModal);
   banner.querySelector('#banPublish').addEventListener('click', publishToGithub);
   banner.querySelector('#banDiscard').addEventListener('click', async ()=>{
     const ok = await confirmModal('Discard local changes', "Replace your local songs, setlist, and print layout with the currently published version? This can't be undone.", 'Discard');
@@ -3304,22 +3294,15 @@ async function publishToGithub(){
   const editorName = getGhEditorName();
   if (!token || !editorName){ openGhSettingsModal(()=> publishToGithub()); return; }
   if (!hasUnpublishedChanges()){ toast('Nothing to publish'); return; }
-  const categories = unpublishedCategories();
-  const selected = await openPublishSelectionModal(categories);
-  if (!selected) return; // canceled outright -- nothing published, nothing discarded
-  // Anything left unchecked is discarded here: reverted locally to the
-  // published baseline, same effect as the editor's own Cancel/Discard for
-  // a single song edit, just scoped to a whole category at once. The
-  // publish step below just ships whatever's currently in STATE, so this
-  // is all it takes -- no separate "don't publish this part" branching.
-  for (const c of categories){
-    if (selected.has(c.key)) continue;
-    if (c.key === 'songs') STATE.songs = publishedBaselineSongs();
-    else if (c.key === 'setlists') STATE.setlists = publishedBaselineSetlists();
-    else if (c.key === 'print') STATE.printPrefs = publishedBaselinePrintPrefs();
-  }
-  saveState();
-  if (selected.size === 0){ toast('Discarded'); render(); return; }
+  // Publish and Discard (see the banner) are both plain, single-click,
+  // act-on-everything actions -- no per-category selection step here.
+  // Checking *what* is about to happen is its own separate, view-only
+  // "Changes" button (openChangesModal()) rather than folded into a
+  // decision Publish forces on every click; the risk with combining them
+  // was that a click would linger with categories still unresolved instead
+  // of just publishing, and Discard already covers "actually, none of it."
+  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list, setlist, and print layout -- live for everyone who opens the hosted site. ${unpublishedChangesSummary()}. Continue?`, 'Publish');
+  if (!ok) return;
   toast('Publishing…');
   try{
     const apiBase = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/contents/${GH_FILE_PATH}`;
