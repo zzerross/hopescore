@@ -1084,7 +1084,7 @@ function ghLogout(){ clearGhToken(); clearGhEditorName(); }
 // those fresh every call and they'd make everything look "changed").
 function songsSignature(songs){
   return JSON.stringify(
-    songs.map(s => ({ id: s.id, title: s.title, keySemitone: s.keySemitone, keyIsMinor: s.keyIsMinor, keyPreferFlat: s.keyPreferFlat, description: s.description, body: s.body }))
+    songs.map(s => ({ id: s.id, title: s.title, keySemitone: s.keySemitone, keyIsMinor: s.keyIsMinor, keyPreferFlat: s.keyPreferFlat, description: s.description, body: s.body, videoKey: s.videoKey||'' }))
       .sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
   );
 }
@@ -2455,6 +2455,11 @@ function renderEditView(songId){
         </div>
         <div class="field"><label>Description (optional)</label><textarea id="fDesc" rows="2">${existing?escapeHtml(existing.description||''):''}</textarea></div>
         <div class="field">
+          <label>Video key (optional)</label>
+          <select id="fVideoKey"><option value="">— Not set —</option>${keyOptionsHTML(existing?.videoKey||'')}</select>
+          <div class="hint">The key the reference YouTube video is actually sung/played in, if different from this chart's key above -- shown next to the video on the song screen.</div>
+        </div>
+        <div class="field">
           <label>Chords &amp; lyrics</label>
           <div class="body-input-wrap">
             <pre class="body-input-backdrop mono" id="bodyInputBackdrop" aria-hidden="true"></pre>
@@ -2473,6 +2478,7 @@ function renderEditView(songId){
   const fTitle = document.getElementById('fTitle');
   const fKey = document.getElementById('fKey');
   const fDesc = document.getElementById('fDesc');
+  const fVideoKey = document.getElementById('fVideoKey');
   const bodyInput = document.getElementById('bodyInput');
   const bodyBackdrop = document.getElementById('bodyInputBackdrop');
   const preview = document.getElementById('livePreview');
@@ -2524,12 +2530,13 @@ function renderEditView(songId){
   // refresh, the Cancel button) can tell a real unsaved edit apart from
   // just having opened the form -- see editDirtyCheck below.
   const savedSnapshot = existing
-    ? { title: existing.title, key: songKeyValue(existing), desc: existing.description||'', body: existing.body }
-    : { title: '', key: fKey.value, desc: '', body: '' };
+    ? { title: existing.title, key: songKeyValue(existing), desc: existing.description||'', videoKey: existing.videoKey||'', body: existing.body }
+    : { title: '', key: fKey.value, desc: '', videoKey: '', body: '' };
   function isEditDirty(){
     return fTitle.value !== savedSnapshot.title
       || fKey.value !== savedSnapshot.key
       || fDesc.value !== savedSnapshot.desc
+      || fVideoKey.value !== savedSnapshot.videoKey
       || bodyInput.value !== savedSnapshot.body;
   }
   editDirtyCheck = isEditDirty;
@@ -2573,11 +2580,11 @@ function renderEditView(songId){
     editDirtyCheck = null;
     if (existing){
       existing.title = title; existing.keySemitone = ks; existing.keyIsMinor = km; existing.keyPreferFlat = !!pf;
-      existing.description = fDesc.value; existing.body = bodyInput.value; existing.updatedAt = Date.now();
+      existing.description = fDesc.value; existing.videoKey = fVideoKey.value; existing.body = bodyInput.value; existing.updatedAt = Date.now();
       saveState(); toast('Saved'); goReplaceTop({view:'song', songId: existing.id, date: cameFromDate});
     } else {
       const id = uid();
-      STATE.songs.push({ id, title, keySemitone: ks, keyIsMinor: km, keyPreferFlat: !!pf, description: fDesc.value, body: bodyInput.value, createdAt: Date.now(), updatedAt: Date.now() });
+      STATE.songs.push({ id, title, keySemitone: ks, keyIsMinor: km, keyPreferFlat: !!pf, description: fDesc.value, videoKey: fVideoKey.value, body: bodyInput.value, createdAt: Date.now(), updatedAt: Date.now() });
       saveState(); toast('Added'); goReplaceTop({view:'song', songId: id, date: cameFromDate});
     }
   });
@@ -2665,6 +2672,7 @@ function renderSongView(songId){
         <button data-size="medium" class="${getVideoSize()==='medium'?'active':''}">M</button>
         <button data-size="large" class="${getVideoSize()==='large'?'active':''}">L</button>
       </div>
+      ${song.videoKey ? `<span class="pill" title="The key this reference video is actually sung/played in">Video: ${escapeHtml(keyLabel(...song.videoKey.split(':').map(Number)))}</span>` : ''}
       ${videoIds.map(id=>`<div class="video-embed" style="width:${videoWidth}px;"><iframe src="https://www.youtube-nocookie.com/embed/${id}" title="YouTube video" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`).join('')}
     </div>` : ''}
     <div class="song-nav-wrap">
@@ -3227,6 +3235,7 @@ async function publishToGithub(){
     const songsForExport = STATE.songs.map(s=>{
       const out = { title: s.title, keySemitone: s.keySemitone, keyIsMinor: s.keyIsMinor };
       if (s.keyPreferFlat !== undefined) out.keyPreferFlat = s.keyPreferFlat;
+      if (s.videoKey) out.videoKey = s.videoKey;
       out.description = s.description; out.body = s.body; out.id = s.id;
       return out;
     });
