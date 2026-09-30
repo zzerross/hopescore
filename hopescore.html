@@ -500,16 +500,21 @@
     display:flex; flex-direction:column; gap:1px; margin-bottom:6px;
     max-height:280px; overflow-y:auto; border-top:1px solid var(--paper-line);
   }
+  .change-item-hint{ font-size:12px; margin:0 0 6px; }
   .change-item{
     display:flex; align-items:center; gap:10px; padding:7px 4px; font-size:13.5px;
-    border-bottom:1px solid var(--paper-line);
+    border-bottom:1px solid var(--paper-line); width:100%; text-align:left;
+    background:none; border-left:none; border-right:none; border-top:none;
+    font-family:inherit; color:inherit; cursor:pointer; border-radius:0;
   }
+  .change-item:hover{ background:var(--paper); }
   .change-item-icon{
     width:16px; flex-shrink:0; text-align:center; font-weight:700; font-family:'Share Tech Mono', monospace;
   }
-  .change-item-add .change-item-icon{ color:var(--accent); }
-  .change-item-remove .change-item-icon{ color:var(--danger); }
-  .change-item-edit .change-item-icon{ color:var(--muted); }
+  .change-item-keep .change-item-icon{ color:var(--accent); }
+  .change-item-discard{ opacity:.55; }
+  .change-item-discard .change-item-icon{ color:var(--danger); }
+  .change-item-discard .change-item-text{ text-decoration:line-through; }
   .change-item-text{ overflow-wrap:anywhere; }
 
   .toast{
@@ -1238,11 +1243,14 @@ function unpublishedChangesSummary(){
   return parts.length ? parts.join(', ') : 'local changes';
 }
 // Breaks the unpublished diff into individual, itemized lines -- one per
-// added/removed/edited song, one per date whose setlist changed (itself
-// broken into which songs were added/removed from it, or "reordered" when
-// the same songs just moved), and one for print layout (a single shared
-// object, not itemizable further). Backs the Changes modal's list -- each
-// item tagged 'add'/'remove'/'edit' for its +/−/✎ icon.
+// added/removed/edited song, one per song added to or removed from a
+// date's setlist (or one "reordered" line when it's the same songs just
+// moved), and one for print layout (a single shared object, not itemizable
+// further). Each item carries enough (kind/type/songId/date) for
+// applyChangeSelection() to act on it individually, not just describe it --
+// the Changes modal lets each line be toggled published (+) or discarded
+// (−) on its own, so the icon means "what happens to this on Publish", not
+// "what kind of change this is" (that's in the text instead).
 function unpublishedChangeItems(){
   const items = [];
   const baseline = publishedBaselineSongs();
@@ -1251,11 +1259,12 @@ function unpublishedChangeItems(){
   const norm = s => JSON.stringify({ title:s.title, keySemitone:s.keySemitone, keyIsMinor:s.keyIsMinor, keyPreferFlat:s.keyPreferFlat, description:s.description, body:s.body, videoKey:s.videoKey||'' });
   for (const s of STATE.songs){
     const b = baseMap.get(s.id);
-    if (!b) items.push({ type:'add', text: `Song: ${splitTitleArtist(s.title).main}` });
-    else if (norm(s) !== norm(b)) items.push({ type:'edit', text: `Song: ${splitTitleArtist(s.title).main}` });
+    const title = splitTitleArtist(s.title).main;
+    if (!b) items.push({ kind:'song', type:'add', songId:s.id, text: `New song: ${title}` });
+    else if (norm(s) !== norm(b)) items.push({ kind:'song', type:'edit', songId:s.id, text: `Song edited: ${title}` });
   }
   for (const b of baseline){
-    if (!localMap.has(b.id)) items.push({ type:'remove', text: `Song: ${splitTitleArtist(b.title).main}` });
+    if (!localMap.has(b.id)) items.push({ kind:'song', type:'remove', songId:b.id, text: `Song removed: ${splitTitleArtist(b.title).main}` });
   }
   const baselineSetlists = publishedBaselineSetlists();
   const dates = new Set([...Object.keys(STATE.setlists||{}), ...Object.keys(baselineSetlists||{})]);
@@ -1267,17 +1276,58 @@ function unpublishedChangeItems(){
     const added = local.filter(id => !baseSet.has(id));
     const removed = base.filter(id => !localSet.has(id));
     const songTitle = id => { const s = localMap.get(id) || baseMap.get(id); return s ? splitTitleArtist(s.title).main : id; };
+    const dateLabel = formatDateHeading(d);
     if (!added.length && !removed.length){
-      items.push({ type:'edit', text: `Setlist ${formatDateHeading(d)}: reordered` });
+      items.push({ kind:'setlist', type:'reorder', date:d, text: `Setlist ${dateLabel}: reordered` });
     } else {
-      for (const id of added) items.push({ type:'add', text: `Setlist ${formatDateHeading(d)}: ${songTitle(id)}` });
-      for (const id of removed) items.push({ type:'remove', text: `Setlist ${formatDateHeading(d)}: ${songTitle(id)}` });
+      for (const id of added) items.push({ kind:'setlist', type:'add', date:d, songId:id, text: `Setlist ${dateLabel}: added ${songTitle(id)}` });
+      for (const id of removed) items.push({ kind:'setlist', type:'remove', date:d, songId:id, text: `Setlist ${dateLabel}: removed ${songTitle(id)}` });
     }
   }
   if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())){
-    items.push({ type:'edit', text:'Print layout' });
+    items.push({ kind:'print', type:'edit', text:'Print layout changed' });
   }
   return items;
+}
+// Applies a Changes-modal selection: items whose index is in `discardedIdx`
+// are individually reverted to the published baseline; everything else is
+// left as-is in STATE (so it goes out as part of the next publish). Songs
+// removed here that were newly-added locally are also stripped from every
+// local setlist, so discarding "New song: X" can't leave a setlist
+// pointing at a song that no longer exists.
+function applyChangeSelection(items, discardedIdx){
+  if (!discardedIdx.size) return;
+  const baselineSongs = publishedBaselineSongs();
+  const baselineSongMap = new Map(baselineSongs.map(s => [s.id, s]));
+  const baselineSetlists = publishedBaselineSetlists();
+  discardedIdx.forEach(i => {
+    const it = items[i];
+    if (!it) return;
+    if (it.kind === 'song'){
+      if (it.type === 'add'){
+        STATE.songs = STATE.songs.filter(s => s.id !== it.songId);
+        for (const d of Object.keys(STATE.setlists)) STATE.setlists[d] = (STATE.setlists[d]||[]).filter(id => id !== it.songId);
+      } else if (it.type === 'remove'){
+        const b = baselineSongMap.get(it.songId);
+        if (b && !STATE.songs.find(s => s.id === it.songId)) STATE.songs.push({ ...b });
+      } else if (it.type === 'edit'){
+        const b = baselineSongMap.get(it.songId);
+        const idx = STATE.songs.findIndex(s => s.id === it.songId);
+        if (b && idx !== -1) STATE.songs[idx] = { ...b };
+      }
+    } else if (it.kind === 'setlist'){
+      if (it.type === 'reorder'){
+        STATE.setlists[it.date] = baselineSetlists[it.date] ? [...baselineSetlists[it.date]] : [];
+      } else if (it.type === 'add'){
+        STATE.setlists[it.date] = (STATE.setlists[it.date]||[]).filter(id => id !== it.songId);
+      } else if (it.type === 'remove'){
+        STATE.setlists[it.date] = [...(STATE.setlists[it.date]||[]), it.songId];
+      }
+    } else if (it.kind === 'print'){
+      STATE.printPrefs = publishedBaselinePrintPrefs();
+    }
+  });
+  saveState();
 }
 
 function loadState(){
@@ -1792,41 +1842,59 @@ function confirmModal(title, message, confirmLabel='Delete'){
   });
 }
 // The single entry point from the banner: an itemized, one-line-per-change
-// list (each tagged with a +/−/✎ icon for added/removed/edited), with
-// Discard All and Publish sitting right above it -- acting on everything,
-// same as the banner's old separate buttons, just consolidated behind one
-// "Changes" click instead of three buttons competing for space in the
-// banner itself.
+// list. Tapping a line toggles it between + (published) and − (discarded --
+// struck through) -- everything starts at + (default: publish everything,
+// same as before there was any selection at all). Discard All ignores the
+// per-line selection and reverts everything, back to the previous screen.
+// Publish applies the current selection (discarding whatever's marked −,
+// via applyChangeSelection()) and then hands off to the normal
+// publishToGithub() flow -- which now only sees the "+" items as pending,
+// and shows its own confirm before actually committing -- also back to the
+// previous screen once that finishes.
 function openChangesModal(){
   const items = unpublishedChangeItems();
-  const ICONS = { add:'+', remove:'−', edit:'✎' };
-  modalBox.style.maxWidth = '420px';
-  modalBox.innerHTML = `
-    <h3>Unpublished changes</h3>
-    ${items.length ? `
-    <div class="modal-actions changes-top-actions">
-      <button class="iconbtn danger" id="modalDiscard">Discard All</button>
-      <button class="iconbtn primary" id="modalPublish">Publish</button>
-    </div>
-    <div class="change-item-list">
-      ${items.map(it => `
-        <div class="change-item change-item-${it.type}">
-          <span class="change-item-icon">${ICONS[it.type]}</span>
-          <span class="change-item-text">${escapeHtml(it.text)}</span>
-        </div>`).join('')}
-    </div>` : `<p class="msg">Nothing unpublished right now.</p>`}
-    <div class="modal-actions">
-      <button class="iconbtn" id="modalOk">Close</button>
-    </div>`;
-  modalBackdrop.classList.add('open');
-  document.getElementById('modalOk').onclick = closeModal;
-  if (items.length){
-    document.getElementById('modalPublish').onclick = ()=>{ closeModal(); publishToGithub(); };
+  const discarded = new Set();
+  function paint(){
+    modalBox.style.maxWidth = '420px';
+    modalBox.innerHTML = `
+      <h3>Unpublished changes</h3>
+      ${items.length ? `
+      <div class="modal-actions changes-top-actions">
+        <button class="iconbtn danger" id="modalDiscard">Discard All</button>
+        <button class="iconbtn primary" id="modalPublish">Publish</button>
+      </div>
+      <p class="msg change-item-hint">Tap a line to switch it between publish (+) and discard (−).</p>
+      <div class="change-item-list">
+        ${items.map((it,i) => `
+          <button type="button" class="change-item ${discarded.has(i)?'change-item-discard':'change-item-keep'}" data-idx="${i}">
+            <span class="change-item-icon">${discarded.has(i) ? '−' : '+'}</span>
+            <span class="change-item-text">${escapeHtml(it.text)}</span>
+          </button>`).join('')}
+      </div>` : `<p class="msg">Nothing unpublished right now.</p>`}
+      <div class="modal-actions">
+        <button class="iconbtn" id="modalOk">Close</button>
+      </div>`;
+    modalBackdrop.classList.add('open');
+    document.getElementById('modalOk').onclick = closeModal;
+    if (!items.length) return;
+    modalBox.querySelectorAll('.change-item').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.idx);
+        if (discarded.has(idx)) discarded.delete(idx); else discarded.add(idx);
+        paint();
+      });
+    });
     document.getElementById('modalDiscard').onclick = async ()=>{
       const did = await discardAllLocalChanges();
       if (did){ closeModal(); render(); }
     };
+    document.getElementById('modalPublish').onclick = ()=>{
+      applyChangeSelection(items, discarded);
+      closeModal();
+      publishToGithub();
+    };
   }
+  paint();
 }
 let toastTimer=null;
 function toast(msg){
