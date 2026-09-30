@@ -1855,13 +1855,20 @@ function openChangesModal(){
   const items = unpublishedChangeItems();
   const discarded = new Set();
   function paint(){
+    // Everything marked "-" means Publish would apply the selection (revert
+    // it all) and then find nothing left to publish -- publishToGithub()'s
+    // own "nothing to publish" guard already handles that harmlessly, but
+    // a live-disabled button says so up front instead of a click landing on
+    // a toast the user has to go read. Discard All still makes sense here
+    // (same end result, explicitly requested) so it stays enabled.
+    const allDiscarded = items.length > 0 && discarded.size === items.length;
     modalBox.style.maxWidth = '420px';
     modalBox.innerHTML = `
       <h3>Unpublished changes</h3>
       ${items.length ? `
       <div class="modal-actions changes-top-actions">
         <button class="iconbtn danger" id="modalDiscard">Discard All</button>
-        <button class="iconbtn primary" id="modalPublish">Publish</button>
+        <button class="iconbtn primary" id="modalPublish" ${allDiscarded?'disabled':''} title="${allDiscarded?'Everything is marked to discard -- nothing to publish':''}">Publish</button>
       </div>
       <p class="msg change-item-hint">Tap a line to switch it between publish (+) and discard (−).</p>
       <div class="change-item-list">
