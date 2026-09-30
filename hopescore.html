@@ -414,7 +414,7 @@
      nothing clickable in that clipped sliver. Pinned to their natural size;
      .present-top's own overflow-x:auto is what absorbs any leftover
      overflow now, on whatever's narrowest. */
-  #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentColSeg, #presentFitSeg, #presentFontSeg, #presentClose{ flex-shrink:0; }
+  #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentColSeg, #presentFitSeg, #presentFontSeg, #presentSpacingSeg, #presentClose{ flex-shrink:0; }
   .present-body{ flex:1; position:relative; overflow:hidden; padding:0 26px 26px; }
   .present-chart-wrap{
     position:absolute; inset:0 26px 26px; display:flex;
@@ -560,6 +560,11 @@
       <span class="font-size-label" id="presentFontLabel"></span>
       <button id="presentFontInc" title="Larger">A+</button>
     </div>
+    <div class="seg" id="presentSpacingSeg" title="Line spacing -- remembered per song, for chords shown vs. hidden">
+      <button id="presentSpacingDec" title="Tighter">Line −</button>
+      <span class="font-size-label" id="presentSpacingLabel"></span>
+      <button id="presentSpacingInc" title="Looser">Line +</button>
+    </div>
     <button class="iconbtn" id="presentClose">Close ✕</button>
   </div>
   <div class="present-body">
@@ -573,6 +578,8 @@
   <div class="print-toolbar no-print">
     <button class="iconbtn" id="printClose" title="Close">← Close</button>
     <div class="topbar-divider"></div>
+    <button class="iconbtn" id="printChordsToggle" title="Show/hide chords">Chords</button>
+    <button class="iconbtn" id="printSectionsToggle" title="Show/hide part labels (Verse, Chorus…)">Parts</button>
     <div class="seg" id="printColSeg" title="Columns">
       <button data-col="1" title="1 column">1</button>
       <button data-col="2" title="2 columns">2</button>
@@ -1719,6 +1726,27 @@ function setFontSize(view, songId, px){
   STATE.settings.fontSizeBySongView[`${view}:${songId}`] = Math.max(lo, Math.min(hi, px));
   saveState();
 }
+// Line spacing, bucketed by (view, song) exactly like font size above --
+// same 'chords'/'prompter' buckets, so the regular song view and Present
+// with chords shown share a value (same as font size already does), while
+// Present with chords hidden gets its own. Independent of print's own
+// lineSpacing (STATE.printPrefs), which stays a separate, publishable
+// setting -- screen and paper were kept deliberately unlinked from the
+// start, this just extends the same screen-side mechanism font size uses.
+const LINE_SPACING_DEFAULT = { chords: 1.45, prompter: 1.45 };
+const LINE_SPACING_RANGE = [1.0, 2.2];
+function getLineSpacing(view, songId){
+  const bySongView = STATE.settings.lineSpacingBySongView || {};
+  const key = songId ? `${view}:${songId}` : null;
+  if (key && Object.prototype.hasOwnProperty.call(bySongView, key)) return bySongView[key];
+  return LINE_SPACING_DEFAULT[view] || 1.45;
+}
+function setLineSpacing(view, songId, v){
+  const [lo, hi] = LINE_SPACING_RANGE;
+  STATE.settings.lineSpacingBySongView = STATE.settings.lineSpacingBySongView || {};
+  STATE.settings.lineSpacingBySongView[`${view}:${songId}`] = Math.round(Math.max(lo, Math.min(hi, v)) * 100) / 100;
+  saveState();
+}
 // Print layout prefs -- see the STATE.printPrefs comment above
 // publishedBaselinePrintPrefs() for why these live outside STATE.settings.
 // Deliberately doesn't fall back to any of the screen view's font/column
@@ -1727,8 +1755,11 @@ function setFontSize(view, songId, px){
 // meant to be adjustable independently of each other.
 const PRINT_FONT_RANGE = [7, 16];
 const PRINT_SPACING_RANGE = [1.0, 2.0];
-const PRINT_PREFS_DEFAULT = { fontSize: 10, columns: 2, lineSpacing: 1.3 };
-function getPrintPrefs(){ return STATE.printPrefs || PRINT_PREFS_DEFAULT; }
+const PRINT_PREFS_DEFAULT = { fontSize: 10, columns: 2, lineSpacing: 1.3, showChords: true, showSections: true };
+// Merged with the defaults (not just "|| default") so a printPrefs object
+// saved before showChords/showSections existed -- locally or published --
+// still gets sensible values for the new fields instead of undefined.
+function getPrintPrefs(){ return { ...PRINT_PREFS_DEFAULT, ...(STATE.printPrefs||{}) }; }
 function setPrintFontSize(pt){
   const [lo, hi] = PRINT_FONT_RANGE;
   STATE.printPrefs = { ...getPrintPrefs(), fontSize: Math.max(lo, Math.min(hi, pt)) };
@@ -1741,6 +1772,16 @@ function setPrintColumns(n){
 function setPrintLineSpacing(v){
   const [lo, hi] = PRINT_SPACING_RANGE;
   STATE.printPrefs = { ...getPrintPrefs(), lineSpacing: Math.round(Math.max(lo, Math.min(hi, v)) * 10) / 10 };
+  saveState();
+}
+// Mirrors Present's chords/sections toggles -- e.g. a lyrics-only handout
+// for vocalists/congregation, same idea as Present's Prompter but on paper.
+function setPrintShowChords(v){
+  STATE.printPrefs = { ...getPrintPrefs(), showChords: !!v };
+  saveState();
+}
+function setPrintShowSections(v){
+  STATE.printPrefs = { ...getPrintPrefs(), showSections: !!v };
   saveState();
 }
 // Whether 2+ consecutive blank lines collapse into one gap. On by default;
@@ -2111,14 +2152,14 @@ function chunkRows(rows){
 // Binary-searches how many *leading* chunks fit in one colWidth x boxHeight
 // column at fontPx, using `probe` (an offscreen .chart-col) for real
 // measurement. More chunks can only add height, so this is monotonic.
-function countFittingChunks(probe, chunks, colWidth, boxHeight, fontPx){
+function countFittingChunks(probe, chunks, colWidth, boxHeight, fontPx, lineSpacing){
   let lo = 0, hi = chunks.length, best = 0;
   while (lo <= hi){
     const mid = (lo+hi) >> 1;
     probe.style.width = colWidth+'px';
     rowsToChartDom(chunks.slice(0, mid).flat(), probe);
     probe.style.fontSize = fontPx+'px';
-    probe.style.lineHeight = '1.45';
+    probe.style.lineHeight = String(lineSpacing);
     const fits = probe.scrollHeight <= boxHeight + 1 && probe.scrollWidth <= colWidth + 1;
     if (fits){ best = mid; lo = mid+1; } else { hi = mid-1; }
   }
@@ -2129,7 +2170,7 @@ function countFittingChunks(probe, chunks, colWidth, boxHeight, fontPx){
 // the rest into column 2, and so on -- rather than pre-splitting evenly.
 // Returns the resulting column blocks plus any chunks that fit nowhere (only
 // non-empty when even `columns` columns can't hold everything at fontPx).
-function flowFit(rows, columns, boxWidth, boxHeight, fontPx){
+function flowFit(rows, columns, boxWidth, boxHeight, fontPx, lineSpacing){
   const gap = columns===2 ? CHART_COL_GAP : 0;
   const colWidth = columns===2 ? (boxWidth-gap)/2 : boxWidth;
   const charW = measureMonoCharWidth(fontPx);
@@ -2144,7 +2185,7 @@ function flowFit(rows, columns, boxWidth, boxHeight, fontPx){
   let remaining = chunks;
   const colBlocks = [];
   for (let c=0; c<columns && remaining.length>0; c++){
-    let n = countFittingChunks(probe, remaining, colWidth, boxHeight, fontPx);
+    let n = countFittingChunks(probe, remaining, colWidth, boxHeight, fontPx, lineSpacing);
     if (n === 0) n = 1; // guarantee progress even if one chunk alone overflows
     colBlocks.push(remaining.slice(0, n).flat());
     remaining = remaining.slice(n);
@@ -2155,11 +2196,11 @@ function flowFit(rows, columns, boxWidth, boxHeight, fontPx){
 // Binary-searches the largest font size at which flowFit places every chunk
 // within `columns` columns with no leftover. Returns {size, fits} -- fits is
 // false if even the smallest usable size still has leftover content.
-function searchFlowFit(rows, columns, boxWidth, boxHeight){
+function searchFlowFit(rows, columns, boxWidth, boxHeight, lineSpacing){
   let lo = 6, hi = 60, best = 6, bestFits = false;
   while (lo <= hi){
     const mid = (lo+hi) >> 1;
-    const fits = flowFit(rows, columns, boxWidth, boxHeight, mid).overflow.length === 0;
+    const fits = flowFit(rows, columns, boxWidth, boxHeight, mid, lineSpacing).overflow.length === 0;
     if (fits){ best = mid; bestFits = true; lo = mid+1; } else { hi = mid-1; }
   }
   return {size: best, fits: bestFits};
@@ -2178,6 +2219,7 @@ function searchFlowFit(rows, columns, boxWidth, boxHeight){
 // Returns {size, scrolled}.
 function layoutChart(container, rows, columns, boxWidth, boxHeight, opts){
   opts = opts || {};
+  const lineSpacing = opts.lineSpacing || 1.45;
 
   if (opts.fitMode === 'wrap'){
     const wrapColWidth = columns===2 ? (boxWidth-CHART_COL_GAP)/2 : boxWidth;
@@ -2190,12 +2232,12 @@ function layoutChart(container, rows, columns, boxWidth, boxHeight, opts){
     const colWidth = n===2 ? (boxWidth-gap)/2 : boxWidth;
     buildChartColumns(container, colBlocks, boxWidth, colWidth, gap);
     container.style.fontSize = opts.fontSize+'px';
-    container.style.lineHeight = '1.45';
+    container.style.lineHeight = String(lineSpacing);
     return { size: opts.fontSize, scrolled: false };
   }
 
-  const search = searchFlowFit(rows, columns, boxWidth, boxHeight);
-  const final = flowFit(rows, columns, boxWidth, boxHeight, search.size);
+  const search = searchFlowFit(rows, columns, boxWidth, boxHeight, lineSpacing);
+  const final = flowFit(rows, columns, boxWidth, boxHeight, search.size, lineSpacing);
   const colBlocks = final.colBlocks.length ? final.colBlocks : [[]];
   if (final.overflow.length){
     colBlocks[colBlocks.length-1] = colBlocks[colBlocks.length-1].concat(final.overflow.flat());
@@ -2205,7 +2247,7 @@ function layoutChart(container, rows, columns, boxWidth, boxHeight, opts){
   const colWidth = n===2 ? (boxWidth-gap)/2 : boxWidth;
   buildChartColumns(container, colBlocks, boxWidth, colWidth, gap);
   container.style.fontSize = search.size+'px';
-  container.style.lineHeight = '1.45';
+  container.style.lineHeight = String(lineSpacing);
   return { size: search.size, scrolled: !search.fits };
 }
 
@@ -2699,14 +2741,14 @@ function renderEditView(songId){
       if (previewPrefs.fitMode === 'wrap'){
         previewCard.style.height = 'auto';
         previewCard.style.overflow = 'visible';
-        layoutChart(preview, rows, previewPrefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize('chords', existing?.id)});
+        layoutChart(preview, rows, previewPrefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize('chords', existing?.id), lineSpacing: getLineSpacing('chords', existing?.id)});
       } else {
         const top = previewCard.getBoundingClientRect().top;
         const cardHeight = Math.max(160, window.innerHeight - top - 24);
         previewCard.style.height = cardHeight + 'px';
         previewCard.style.overflow = 'hidden';
         const boxHeight = cardHeight - 28;           // minus 14px+14px vertical padding
-        const result = layoutChart(preview, rows, previewPrefs.columns, boxWidth, boxHeight, {fitMode:'auto'});
+        const result = layoutChart(preview, rows, previewPrefs.columns, boxWidth, boxHeight, {fitMode:'auto', lineSpacing: getLineSpacing('chords', existing?.id)});
         if (result.scrolled){
           previewCard.style.height = 'auto';
           previewCard.style.overflow = 'visible';
@@ -2843,6 +2885,11 @@ function renderSongView(songId){
       <span class="font-size-label" id="fontSizeLabel">${getFontSize('chords', song.id)}px</span>
       <button id="fontInc" title="Larger">A+</button>
     </div>
+    <div class="seg" id="lineSpacingSeg" title="Line spacing -- remembered per song on this device">
+      <button id="lineSpacingDec" title="Tighter">Line −</button>
+      <span class="font-size-label" id="lineSpacingLabel">${getLineSpacing('chords', song.id).toFixed(2)}x</span>
+      <button id="lineSpacingInc" title="Looser">Line +</button>
+    </div>
     <div class="seg" id="blankSeg" title="Multiple consecutive blank lines in the source text">
       <button data-blank="1" class="${getCollapseBlanks()?'active':''}" title="Merge multiple blank lines into a single gap">Merge</button>
       <button data-blank="0" class="${!getCollapseBlanks()?'active':''}" title="Keep every blank line as its own gap">Keep</button>
@@ -2917,14 +2964,14 @@ function renderSongView(songId){
       if (prefs.fitMode === 'wrap'){
         chartCard.style.height = 'auto';
         chartCard.style.overflow = 'visible';
-        layoutChart(chartEl, rows, prefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize('chords', song.id)});
+        layoutChart(chartEl, rows, prefs.columns, boxWidth, Infinity, {fitMode:'wrap', fontSize: getFontSize('chords', song.id), lineSpacing: getLineSpacing('chords', song.id)});
       } else {
         const top = chartCard.getBoundingClientRect().top;
         const cardHeight = Math.max(160, window.innerHeight - top - 24);
         chartCard.style.height = cardHeight + 'px';
         chartCard.style.overflow = 'hidden';
         const boxHeight = cardHeight - 28;           // minus 14px+14px vertical padding
-        const result = layoutChart(chartEl, rows, prefs.columns, boxWidth, boxHeight, {fitMode:'auto'});
+        const result = layoutChart(chartEl, rows, prefs.columns, boxWidth, boxHeight, {fitMode:'auto', lineSpacing: getLineSpacing('chords', song.id)});
         if (result.scrolled){
           // Even the smallest usable size couldn't flow everything into the
           // available columns -- let the card grow and the page scroll
@@ -2998,6 +3045,18 @@ function renderSongView(songId){
   }
   document.getElementById('fontDec').addEventListener('click', ()=> bumpFontSize(-1));
   document.getElementById('fontInc').addEventListener('click', ()=> bumpFontSize(1));
+  // Unlike font size, line spacing doesn't need the Auto-mode-forces-Wrap
+  // trick: it's a real input to the auto-fit search (like columns already
+  // is), not an output Auto would otherwise recompute and silently
+  // override -- adjusting it in Auto mode just finds a different font size
+  // that still fits, which is the expected result either way.
+  function bumpLineSpacing(delta){
+    setLineSpacing('chords', song.id, getLineSpacing('chords', song.id)+delta);
+    document.getElementById('lineSpacingLabel').textContent = getLineSpacing('chords', song.id).toFixed(2)+'x';
+    repaint();
+  }
+  document.getElementById('lineSpacingDec').addEventListener('click', ()=> bumpLineSpacing(-0.1));
+  document.getElementById('lineSpacingInc').addEventListener('click', ()=> bumpLineSpacing(0.1));
   document.getElementById('blankSeg').addEventListener('click', (e)=>{
     const btn = e.target.closest('button[data-blank]'); if (!btn) return;
     setCollapseBlanks(btn.dataset.blank === '1');
@@ -3085,6 +3144,7 @@ function paintPresent(){
   // bigger default than chords-shown, regardless of theme/section state).
   const fontView = showChords ? 'chords' : 'prompter';
   document.getElementById('presentFontLabel').textContent = getFontSize(fontView, song.id)+'px';
+  document.getElementById('presentSpacingLabel').textContent = getLineSpacing(fontView, song.id).toFixed(2)+'x';
 
   const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
   // Same column-count / fit-mode controls as the regular song view, mirrored
@@ -3104,11 +3164,12 @@ function paintPresent(){
   const columns = showChords ? prefs.columns : 1;
   const fitMode = showChords ? prefs.fitMode : 'wrap';
   const fontSize = getFontSize(fontView, song.id);
+  const lineSpacing = getLineSpacing(fontView, song.id);
   rows = filterPresentRows(rows, showChords, showSections);
   const chartEl = document.getElementById('presentChart');
   requestAnimationFrame(()=>{
     const box = document.querySelector('.present-chart-wrap');
-    layoutChart(chartEl, rows, columns, box.clientWidth, box.clientHeight, {fitMode, fontSize});
+    layoutChart(chartEl, rows, columns, box.clientWidth, box.clientHeight, {fitMode, fontSize, lineSpacing});
   });
 }
 function presentStep(delta){
@@ -3132,11 +3193,22 @@ function bumpPresentFontSize(delta){
   setFontSize(fontView, song.id, getFontSize(fontView, song.id)+delta);
   paintPresent();
 }
+// Line spacing doesn't need the Wrap-pinning trick font size does -- see
+// the same note on the regular song view's bumpLineSpacing().
+function bumpPresentLineSpacing(delta){
+  const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
+  if (!song) return;
+  const fontView = getPresentShowChords() ? 'chords' : 'prompter';
+  setLineSpacing(fontView, song.id, getLineSpacing(fontView, song.id)+delta);
+  paintPresent();
+}
 document.getElementById('presentPrev').addEventListener('click', ()=>presentStep(-1));
 document.getElementById('presentNext').addEventListener('click', ()=>presentStep(1));
 document.getElementById('presentClose').addEventListener('click', closePresent);
 document.getElementById('presentFontDec').addEventListener('click', ()=> bumpPresentFontSize(-1));
 document.getElementById('presentFontInc').addEventListener('click', ()=> bumpPresentFontSize(1));
+document.getElementById('presentSpacingDec').addEventListener('click', ()=> bumpPresentLineSpacing(-0.1));
+document.getElementById('presentSpacingInc').addEventListener('click', ()=> bumpPresentLineSpacing(0.1));
 document.getElementById('presentThemeToggle').addEventListener('click', ()=>{
   setPresentTheme(getPresentTheme()==='black' ? 'normal' : 'black');
   paintPresent();
@@ -3229,6 +3301,8 @@ function paintPrintPreview(){
   document.querySelectorAll('#printColSeg button').forEach(b=> b.classList.toggle('active', Number(b.dataset.col)===prefs.columns));
   document.getElementById('printFontLabel').textContent = prefs.fontSize+'pt';
   document.getElementById('printSpacingLabel').textContent = prefs.lineSpacing.toFixed(1)+'x';
+  document.getElementById('printChordsToggle').classList.toggle('primary', prefs.showChords);
+  document.getElementById('printSectionsToggle').classList.toggle('primary', prefs.showSections);
 
   // Anyone can nudge these controls for their own one-off print, but only
   // an editor's adjustment can become the shared default -- surface that
@@ -3265,7 +3339,7 @@ function paintPrintPreview(){
     root.appendChild(songEl); // must be in the DOM before clientWidth means anything
     const colWidth = prefs.columns===2 ? (songEl.clientWidth - CHART_COL_GAP)/2 : songEl.clientWidth;
     const maxChars = Math.max(6, Math.floor(colWidth / charW));
-    const rows = computeSongRows(song, 'original', null);
+    const rows = filterPresentRows(computeSongRows(song, 'original', null), prefs.showChords, prefs.showSections);
     // Title/description render column-span:all (the full page width, not
     // one narrow column) and wrap normally via CSS, so they're kept out of
     // the per-column character-count wrap below -- wrapping them to the
@@ -3288,6 +3362,8 @@ document.getElementById('printFontDec').addEventListener('click', ()=>{ setPrint
 document.getElementById('printFontInc').addEventListener('click', ()=>{ setPrintFontSize(getPrintPrefs().fontSize + 1); paintPrintPreview(); });
 document.getElementById('printSpacingDec').addEventListener('click', ()=>{ setPrintLineSpacing(getPrintPrefs().lineSpacing - 0.1); paintPrintPreview(); });
 document.getElementById('printSpacingInc').addEventListener('click', ()=>{ setPrintLineSpacing(getPrintPrefs().lineSpacing + 0.1); paintPrintPreview(); });
+document.getElementById('printChordsToggle').addEventListener('click', ()=>{ setPrintShowChords(!getPrintPrefs().showChords); paintPrintPreview(); });
+document.getElementById('printSectionsToggle').addEventListener('click', ()=>{ setPrintShowSections(!getPrintPrefs().showSections); paintPrintPreview(); });
 document.addEventListener('keydown', (e)=>{
   if (e.key==='Escape' && printPreviewEl.classList.contains('open')) closePrintPreview();
 });
