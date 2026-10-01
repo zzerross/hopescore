@@ -2986,8 +2986,6 @@ function renderSongView(songId){
     <div class="video-row" id="videoRow">
       <div class="video-tab-row">
         <div class="seg video-tab-seg" id="videoTabSeg"></div>
-        <span class="pill" id="videoKeyPill" hidden></span>
-        <span class="pill" id="videoLabelPill" hidden></span>
       </div>
       <div class="video-player-row">
         <div class="seg video-size-seg" id="videoSizeSeg" title="Player size -- remembered on this device">
@@ -3024,21 +3022,13 @@ function renderSongView(songId){
   // or editing the song does.
   function paintVideo(){
     document.querySelectorAll('#videoSizeSeg button').forEach(b => b.classList.toggle('active', b.dataset.size===getVideoSize()));
+    // Always rendered as tabs, even for a single video -- showing one video
+    // as a lone tab and another as a bare key pill was an inconsistency,
+    // not a simplification, and it's where the key going missing for a
+    // single video turned out to be hiding.
     const tabSeg = document.getElementById('videoTabSeg');
-    const showTabs = videos.length>1;
-    tabSeg.style.display = showTabs ? '' : 'none';
     tabSeg.innerHTML = videos.map((v,i)=>`<button data-idx="${i}" class="${i===activeVideoIdx?'active':''}">${escapeHtml(videoTabText(v,i))}</button>`).join('');
     const v = videos[activeVideoIdx];
-    // With 2+ videos the active tab's own label already shows its key/label
-    // ("D · Studio"), so these separate pills would just repeat it -- only
-    // needed as the sole key/label indicator for a single, tab-less video.
-    const keyPill = document.getElementById('videoKeyPill');
-    keyPill.hidden = showTabs || !v.key;
-    if (v.key) keyPill.textContent = keyLabel(...v.key.split(':').map(Number));
-    const labelPill = document.getElementById('videoLabelPill');
-    const hasLabel = !!(v.label && v.label.trim());
-    labelPill.hidden = showTabs || !hasLabel;
-    if (hasLabel) labelPill.textContent = v.label.trim();
     document.getElementById('videoEmbedBox').style.width = VIDEO_SIZES[getVideoSize()]+'px';
     document.getElementById('videoIframe').src = `https://www.youtube-nocookie.com/embed/${v.ytId}`;
   }
