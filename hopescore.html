@@ -1254,7 +1254,13 @@ function setLastPublishedPrintPrefs(printPrefs){
 function publishedBaselinePrintPrefs(){
   return getLastPublishedPrintPrefs() || seedState().printPrefs;
 }
-function printPrefsSignature(p){ return JSON.stringify(p||{}); }
+// Merged with the same defaults getPrintPrefs() uses before stringifying --
+// otherwise a raw printPrefs object missing a field added later (like
+// showChords/showSections did) would never byte-for-byte match the fully-
+// merged shape setLastPublishedPrintPrefs() caches right after a publish,
+// so "unpublished changes" would never clear even when nothing had
+// actually changed since that publish.
+function printPrefsSignature(p){ return JSON.stringify({ ...PRINT_PREFS_DEFAULT, ...(p||{}) }); }
 
 function hasUnpublishedChanges(){
   if (!isEditorLoggedIn()) return false;
