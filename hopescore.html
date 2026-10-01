@@ -301,26 +301,24 @@
   .row-link{ white-space:normal; word-break:break-all; }
   .row-link a{ color:var(--accent); text-decoration:underline; }
 
-  /* Two stacked rows: tabs/key/label on top, size selector beside the
-     player underneath -- kept as two separate flex rows (not one wrapping
-     row) because a flex item's flex-basis overrides its own width, so a
-     single wrapping row could never hold the player at its real S/M/L
-     pixel width once it wrapped onto its own line. */
-  /* The song view trims its outer padding to just 6px to maximize chart
-     space (see .wrap.song-view) -- the chart card below only looks more
-     inset at that same 6px because its own border/radius/shadow frame it,
-     while these plain buttons have no such frame and so look flush
-     against the edge. A little extra padding here, not a change to the
-     size selector's position, is what actually fixes that. */
-  .video-row{ display:flex; flex-direction:column; gap:8px; margin-bottom:8px; padding:0 6px; }
-  .video-tab-row{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-  .video-player-row{ display:flex; align-items:flex-start; gap:8px; }
+  /* A single shared player (one video at a time, chosen from the dropdown)
+     with its own size control, all on one row -- there's only ever one
+     video mounted, so this isn't a per-item tab/content pattern, just a
+     picker driving a shared display area. The song view trims its outer
+     padding to just 6px to maximize chart space (see .wrap.song-view) --
+     the chart card below only looks more inset at that same 6px because
+     its own border/radius/shadow frame it, while these plain buttons have
+     no such frame and so look flush against the edge. A little extra
+     padding here is what actually fixes that. */
+  .video-row{ display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px; margin-bottom:8px; padding:0 6px; }
   .video-embed{ position:relative; flex:none; width:180px; aspect-ratio:16/9; border-radius:8px; overflow:hidden; background:#000; }
   .video-embed iframe{ position:absolute; inset:0; width:100%; height:100%; border:0; }
   .video-size-seg{ flex:none; align-self:stretch; flex-direction:column; }
   .video-size-seg button{ padding:4px 8px; font-size:11px; flex:1; }
-  .video-tab-seg{ flex-wrap:wrap; }
-  .video-tab-seg button{ max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .video-picker{
+    height:32px; padding:0 10px; border-radius:8px; border:1px solid var(--paper-line);
+    background:var(--surface); color:var(--ink); font-size:13px; cursor:pointer; max-width:220px;
+  }
 
   /* ---------- editor view: reference video list ---------- */
   .video-rows-edit{ display:flex; flex-direction:column; gap:8px; margin-bottom:6px; }
@@ -2955,7 +2953,7 @@ function renderSongView(songId){
   // in the body/description for a song that predates that list) -- only the
   // ones that actually parse as a YouTube link get an embedded player.
   const videos = getSongVideos(song).map(v => ({...v, ytId: parseYoutubeId(v.url)})).filter(v => v.ytId);
-  function videoTabText(v, i){
+  function videoOptionText(v, i){
     const parts = [];
     if (v.key) parts.push(keyLabel(...v.key.split(':').map(Number)));
     if (v.label && v.label.trim()) parts.push(v.label.trim());
@@ -3010,19 +3008,15 @@ function renderSongView(songId){
   wrap.innerHTML = `
     ${showVideo ? `
     <div class="video-row" id="videoRow">
-      <div class="video-tab-row">
-        <div class="seg video-tab-seg" id="videoTabSeg"></div>
+      <div class="video-embed" id="videoEmbedBox">
+        <iframe id="videoIframe" title="YouTube video" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
       </div>
-      <div class="video-player-row">
-        <div class="seg video-size-seg" id="videoSizeSeg" title="Player size -- remembered on this device">
-          <button data-size="small" class="${getVideoSize()==='small'?'active':''}">S</button>
-          <button data-size="medium" class="${getVideoSize()==='medium'?'active':''}">M</button>
-          <button data-size="large" class="${getVideoSize()==='large'?'active':''}">L</button>
-        </div>
-        <div class="video-embed" id="videoEmbedBox">
-          <iframe id="videoIframe" title="YouTube video" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
-        </div>
+      <div class="seg video-size-seg" id="videoSizeSeg" title="Player size -- remembered on this device">
+        <button data-size="small" class="${getVideoSize()==='small'?'active':''}">S</button>
+        <button data-size="medium" class="${getVideoSize()==='medium'?'active':''}">M</button>
+        <button data-size="large" class="${getVideoSize()==='large'?'active':''}">L</button>
       </div>
+      <select class="video-picker" id="videoPicker" title="Which reference video to show"></select>
     </div>` : ''}
     <div class="song-nav-wrap">
       ${canNavigate ? `<button class="tap-zone left" id="songPrev" title="Previous song"><span class="tap-chevron">‹</span></button>` : ''}
@@ -3042,18 +3036,16 @@ function renderSongView(songId){
       renderSongView(songId);
     });
   }
-  // Repaints just the video player (size, active tab, key/label pills,
-  // iframe src) without touching the chart below -- switching tabs or
-  // size doesn't need the whole view rebuilt the way toggling visibility
-  // or editing the song does.
+  // Repaints just the video player (size, dropdown selection, iframe src)
+  // without touching the chart below -- switching videos or size doesn't
+  // need the whole view rebuilt the way toggling visibility or editing the
+  // song does. The dropdown is rebuilt every paint (not just re-selected)
+  // so it always reflects every video uniformly, 1 or many -- no separate
+  // single-video code path to drift out of sync with the multi-video one.
   function paintVideo(){
     document.querySelectorAll('#videoSizeSeg button').forEach(b => b.classList.toggle('active', b.dataset.size===getVideoSize()));
-    // Always rendered as tabs, even for a single video -- showing one video
-    // as a lone tab and another as a bare key pill was an inconsistency,
-    // not a simplification, and it's where the key going missing for a
-    // single video turned out to be hiding.
-    const tabSeg = document.getElementById('videoTabSeg');
-    tabSeg.innerHTML = videos.map((v,i)=>`<button data-idx="${i}" class="${i===activeVideoIdx?'active':''}">${escapeHtml(videoTabText(v,i))}</button>`).join('');
+    const picker = document.getElementById('videoPicker');
+    picker.innerHTML = videos.map((v,i)=>`<option value="${i}" ${i===activeVideoIdx?'selected':''}>${escapeHtml(videoOptionText(v,i))}</option>`).join('');
     const v = videos[activeVideoIdx];
     document.getElementById('videoEmbedBox').style.width = VIDEO_SIZES[getVideoSize()]+'px';
     document.getElementById('videoIframe').src = `https://www.youtube-nocookie.com/embed/${v.ytId}`;
@@ -3066,9 +3058,8 @@ function renderSongView(songId){
       paintVideo();
       repaint();
     });
-    document.getElementById('videoTabSeg').addEventListener('click', (e)=>{
-      const btn = e.target.closest('button[data-idx]'); if (!btn) return;
-      activeVideoIdx = Number(btn.dataset.idx);
+    document.getElementById('videoPicker').addEventListener('change', (e)=>{
+      activeVideoIdx = Number(e.target.value);
       paintVideo();
     });
   }
