@@ -1373,6 +1373,33 @@ function applyChangeSelection(items, discardedIdx){
   saveState();
 }
 
+// What this device's local draft looked like against the seed the *last*
+// time it loaded the page, kept forever (no trust window -- this isn't
+// about GitHub Pages deploy lag, it's about telling "I actually edited
+// this" apart from "this is just unchanged and the published truth moved
+// on without me"). Without it, an editor who made no local edits at all
+// but reloads after a DIFFERENT editor published would keep seeing their
+// own now-stale local draft (saved.songs/setlists/printPrefs below)
+// instead of the fresh seed, and hasUnpublishedChanges() would then
+// compare that stale draft against the fresh baseline and wrongly report
+// local changes that were never actually made.
+const LAST_SEEN_SEED_KEY = 'hopescore_last_seen_seed_sig_v1';
+function getLastSeenSeedSig(){
+  try{ return JSON.parse(localStorage.getItem(LAST_SEEN_SEED_KEY)); }catch(e){ return null; }
+}
+function setLastSeenSeedSig(sig){
+  localStorage.setItem(LAST_SEEN_SEED_KEY, JSON.stringify(sig));
+}
+// Same TDZ trap the GH_TOKEN_KEY comment above describes, hit for real this
+// time: printPrefsSignature() (called below, every load) reads this
+// constant, and it used to be declared much further down the file, after
+// `let STATE = loadState()` actually runs. Referencing a `const` before its
+// own declaration line has executed throws, loadState()'s try/catch
+// swallowed that silently, and the whole function fell through to
+// `return seedState()` -- discarding this editor's entire local draft
+// (songs, setlists, print prefs, all of it) on every single load, not just
+// print prefs. Moved up here, by the same reasoning, to actually fix it.
+const PRINT_PREFS_DEFAULT = { fontSize: 10, columns: 2, lineSpacing: 1.3, showChords: true, showSections: true };
 function loadState(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
@@ -1386,13 +1413,35 @@ function loadState(){
         setlists = (saved.setlist && saved.setlist.length) ? { [nearestSundayISO()]: saved.setlist } : {};
       }
       // An editor (this device has a publish token configured) keeps their
-      // own local song/setlist edits across reloads, so a draft survives
-      // until they hit Publish. Everyone else always sees this load's
-      // published data -- the latest version when online, or the
-      // last-cached one when offline (the service worker's network-first
-      // strategy already handles that at the file level) -- only device
-      // settings stay personal/local.
-      if (getGhToken()) return { songs: saved.songs || seedState().songs, setlists, printPrefs: saved.printPrefs || seedState().printPrefs, settings: saved.settings || {} };
+      // own local song/setlist/print edits across reloads, so a draft
+      // survives until they hit Publish -- but only a field this editor
+      // actually touched. A field whose local draft still matches what
+      // this device last saw as the seed (no real edit since then) instead
+      // picks up this load's fresh seed, so someone else's publish in the
+      // meantime is reflected rather than masked by an unedited stale
+      // draft. Everyone else (no token) always sees this load's published
+      // data -- the latest version when online, or the last-cached one
+      // when offline (the service worker's network-first strategy already
+      // handles that at the file level) -- only device settings stay
+      // personal/local.
+      if (getGhToken()){
+        const fresh = seedState();
+        const lastSeen = getLastSeenSeedSig();
+        const songsUnedited = lastSeen && songsSignature(saved.songs || fresh.songs) === lastSeen.songs;
+        const setlistsUnedited = lastSeen && setlistsSignature(setlists) === lastSeen.setlists;
+        const printPrefsUnedited = lastSeen && printPrefsSignature(saved.printPrefs || fresh.printPrefs) === lastSeen.printPrefs;
+        setLastSeenSeedSig({
+          songs: songsSignature(fresh.songs),
+          setlists: setlistsSignature(fresh.setlists),
+          printPrefs: printPrefsSignature(fresh.printPrefs),
+        });
+        return {
+          songs: songsUnedited ? fresh.songs : (saved.songs || fresh.songs),
+          setlists: setlistsUnedited ? fresh.setlists : setlists,
+          printPrefs: printPrefsUnedited ? fresh.printPrefs : (saved.printPrefs || fresh.printPrefs),
+          settings: saved.settings || {},
+        };
+      }
       return { songs: seedState().songs, setlists: seedState().setlists, printPrefs: seedState().printPrefs, settings: saved.settings || {} };
     }
   }catch(e){}
@@ -1807,9 +1856,10 @@ function setLineSpacing(view, songId, v){
 // settings: paper and screen call for different defaults (print wants a
 // much smaller point size than a comfortable screen size), and the two are
 // meant to be adjustable independently of each other.
+// (PRINT_PREFS_DEFAULT itself moved up above loadState() -- see the comment
+// there -- since printPrefsSignature() needs it on every load.)
 const PRINT_FONT_RANGE = [7, 16];
 const PRINT_SPACING_RANGE = [1.0, 2.0];
-const PRINT_PREFS_DEFAULT = { fontSize: 10, columns: 2, lineSpacing: 1.3, showChords: true, showSections: true };
 // Merged with the defaults (not just "|| default") so a printPrefs object
 // saved before showChords/showSections existed -- locally or published --
 // still gets sensible values for the new fields instead of undefined.
