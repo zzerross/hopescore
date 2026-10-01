@@ -306,7 +306,13 @@
      row) because a flex item's flex-basis overrides its own width, so a
      single wrapping row could never hold the player at its real S/M/L
      pixel width once it wrapped onto its own line. */
-  .video-row{ display:flex; flex-direction:column; gap:8px; margin-bottom:8px; }
+  /* The song view trims its outer padding to just 6px to maximize chart
+     space (see .wrap.song-view) -- the chart card below only looks more
+     inset at that same 6px because its own border/radius/shadow frame it,
+     while these plain buttons have no such frame and so look flush
+     against the edge. A little extra padding here, not a change to the
+     size selector's position, is what actually fixes that. */
+  .video-row{ display:flex; flex-direction:column; gap:8px; margin-bottom:8px; padding:0 6px; }
   .video-tab-row{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
   .video-player-row{ display:flex; align-items:flex-start; gap:8px; }
   .video-embed{ position:relative; flex:none; width:180px; aspect-ratio:16/9; border-radius:8px; overflow:hidden; background:#000; }
