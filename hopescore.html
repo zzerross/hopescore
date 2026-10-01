@@ -139,7 +139,7 @@
   }
   .song-list{ border-top:1px solid var(--paper-line); }
   .song-row{
-    display:grid; grid-template-columns:30px 1fr; align-items:center; gap:14px;
+    display:grid; grid-template-columns:30px 20px 1fr; align-items:center; gap:14px;
     padding:11px 4px; border-bottom:1px solid var(--paper-line); cursor:pointer;
   }
   .song-row:hover{ background:var(--surface); }
@@ -155,6 +155,10 @@
     border-style:solid; border-color:var(--accent); background:var(--accent); color:var(--surface);
   }
   .song-badge.assigned:hover{ opacity:.85; }
+  /* Always reserve this column (even for a song with no video) so titles
+     stay aligned across rows -- the icon itself only renders when that
+     particular song actually has one. */
+  .song-video-icon{ font-size:13px; text-align:center; opacity:.65; }
   .song-title{ font-family:'Fraunces'; font-weight:600; font-size:15px; }
   .empty-state{ padding:40px 4px; color:var(--muted); text-align:center; font-size:14px; }
   .unpub-banner{
@@ -215,8 +219,8 @@
     background:var(--surface); color:var(--ink); font-size:12px; cursor:pointer;
   }
   .calendar-today-btn:hover{ border-color:var(--focus); }
-  .setlist-row{ grid-template-columns:30px 1fr auto; }
-  .setlist-row.editable{ grid-template-columns:30px 1fr auto auto; }
+  .setlist-row{ grid-template-columns:30px 20px 1fr auto; }
+  .setlist-row.editable{ grid-template-columns:30px 20px 1fr auto auto; }
   .setlist-row .pill{ flex-shrink:0; }
   .row-controls{ display:flex; gap:4px; }
   .row-controls button{
@@ -230,8 +234,8 @@
     margin:28px 0 10px; padding-top:14px; border-top:1px solid var(--paper-line);
   }
   /* Library rows have no per-row badge for a non-editor (setlist membership
-     can't be changed without logging in), so they only need one column. */
-  .song-row.simple{ grid-template-columns:1fr; }
+     can't be changed without logging in), so they only need the icon + title. */
+  .song-row.simple{ grid-template-columns:20px 1fr; }
 
   /* ---------- editor view ---------- */
   .editor-grid{ display:grid; grid-template-columns:360px 1fr; gap:28px; align-items:start; }
@@ -2058,6 +2062,12 @@ function getSongVideos(song){
     label: '',
   }));
 }
+// Same "does this actually embed" check renderSongView uses to decide
+// whether to show a player at all -- so the song-list icon never promises
+// a video that the song screen itself wouldn't actually show.
+function songHasVideo(song){
+  return getSongVideos(song).some(v => parseYoutubeId(v.url));
+}
 function computeSongRows(song, mode, targetVal){
   const blocks = parseBody(song.body, getCollapseBlanks());
   const transform = makeTransform(mode, songBaseKey(song), parseKeyValue(targetVal));
@@ -2529,6 +2539,7 @@ function renderHomeView(date){
       row.className = editor ? 'song-row setlist-row editable' : 'song-row setlist-row';
       row.innerHTML = `
         <span class="song-badge assigned">${i+1}</span>
+        <span class="song-video-icon" title="${songHasVideo(s)?'Has a reference video':''}">${songHasVideo(s)?'📺':''}</span>
         <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>
         <span class="pill">${escapeHtml(songKeyLabel(s))}</span>
         ${editor ? `<div class="row-controls">
@@ -2578,6 +2589,7 @@ function renderHomeView(date){
       row.className = editor ? 'song-row' : 'song-row simple';
       row.innerHTML = `
         ${editor ? `<button class="song-badge ${idx===-1?'':'assigned'}" data-act="toggle" title="${idx===-1?"Add to this date's setlist":"Remove from this date's setlist"}">${idx===-1?'':idx+1}</button>` : ''}
+        <span class="song-video-icon" title="${songHasVideo(s)?'Has a reference video':''}">${songHasVideo(s)?'📺':''}</span>
         <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>`;
       row.addEventListener('click', (e)=>{
         if (e.target.closest('[data-act]')) return;
