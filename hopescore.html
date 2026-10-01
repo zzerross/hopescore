@@ -3048,7 +3048,15 @@ function renderSongView(songId){
     picker.innerHTML = videos.map((v,i)=>`<option value="${i}" ${i===activeVideoIdx?'selected':''}>${escapeHtml(videoOptionText(v,i))}</option>`).join('');
     const v = videos[activeVideoIdx];
     document.getElementById('videoEmbedBox').style.width = VIDEO_SIZES[getVideoSize()]+'px';
-    document.getElementById('videoIframe').src = `https://www.youtube-nocookie.com/embed/${v.ytId}`;
+    // playsinline=1 is YouTube's own documented embed parameter for this
+    // exact symptom (tapping the thumbnail bounces out to the native app
+    // instead of playing inline) -- it's been requested on mobile browsers
+    // generally, not just iOS Safari where it originates. This embed URL
+    // itself hasn't otherwise changed since the video feature was first
+    // built, so a video that still bounces out after this is most likely
+    // one whose uploader has restricted embedding elsewhere, which no
+    // query parameter here can override.
+    document.getElementById('videoIframe').src = `https://www.youtube-nocookie.com/embed/${v.ytId}?playsinline=1`;
   }
   if (showVideo){
     paintVideo();
