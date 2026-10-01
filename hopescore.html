@@ -1390,6 +1390,23 @@ function getLastSeenSeedSig(){
 function setLastSeenSeedSig(sig){
   localStorage.setItem(LAST_SEEN_SEED_KEY, JSON.stringify(sig));
 }
+// A device that already had a local draft before this tracking existed has
+// no lastSeen to bootstrap from -- without this, loadState() can't tell
+// "edited" from "already stale when this shipped" on that first load, and
+// since nothing ever rewrites the stale draft itself, it stays stuck
+// showing unpublished changes on every future load too, not just the
+// first one. Falls back to whatever this device last actually published
+// (ignoring that cache's own short trust window -- see
+// GH_LAST_PUBLISHED_TRUST_MS -- which exists to cover GitHub Pages' deploy
+// lag, not relevant here) as the best available "was this really edited"
+// reference: a draft that's unchanged since this editor's own last publish
+// is exactly the stale-not-edited case this whole mechanism exists to catch.
+function getEverPublishedRaw(key, field){
+  try{
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw)[field] : null;
+  }catch(e){ return null; }
+}
 // Same TDZ trap the GH_TOKEN_KEY comment above describes, hit for real this
 // time: printPrefsSignature() (called below, every load) reads this
 // constant, and it used to be declared much further down the file, after
@@ -1426,21 +1443,44 @@ function loadState(){
       // personal/local.
       if (getGhToken()){
         const fresh = seedState();
-        const lastSeen = getLastSeenSeedSig();
-        const songsUnedited = lastSeen && songsSignature(saved.songs || fresh.songs) === lastSeen.songs;
-        const setlistsUnedited = lastSeen && setlistsSignature(setlists) === lastSeen.setlists;
-        const printPrefsUnedited = lastSeen && printPrefsSignature(saved.printPrefs || fresh.printPrefs) === lastSeen.printPrefs;
+        // No lastSeen yet on this device -- fall back to this editor's own
+        // last-published signature (see getEverPublishedRaw() above) as the
+        // reference instead, so a draft that's simply unchanged since this
+        // editor's own last publish doesn't get stuck reading as "edited"
+        // forever just because it predates this tracking.
+        const reference = getLastSeenSeedSig() || {
+          songs: (() => { const s = getEverPublishedRaw(GH_LAST_PUBLISHED_KEY, 'songs'); return s ? songsSignature(s) : null; })(),
+          setlists: (() => { const s = getEverPublishedRaw(GH_LAST_PUBLISHED_SETLISTS_KEY, 'setlists'); return s ? setlistsSignature(s) : null; })(),
+          printPrefs: (() => { const p = getEverPublishedRaw(GH_LAST_PUBLISHED_PRINT_KEY, 'printPrefs'); return p ? printPrefsSignature(p) : null; })(),
+        };
+        const songsUnedited = reference.songs && songsSignature(saved.songs || fresh.songs) === reference.songs;
+        const setlistsUnedited = reference.setlists && setlistsSignature(setlists) === reference.setlists;
+        const printPrefsUnedited = reference.printPrefs && printPrefsSignature(saved.printPrefs || fresh.printPrefs) === reference.printPrefs;
         setLastSeenSeedSig({
           songs: songsSignature(fresh.songs),
           setlists: setlistsSignature(fresh.setlists),
           printPrefs: printPrefsSignature(fresh.printPrefs),
         });
-        return {
+        const result = {
           songs: songsUnedited ? fresh.songs : (saved.songs || fresh.songs),
           setlists: setlistsUnedited ? fresh.setlists : setlists,
           printPrefs: printPrefsUnedited ? fresh.printPrefs : (saved.printPrefs || fresh.printPrefs),
           settings: saved.settings || {},
         };
+        // Adopting fresh data for an unedited field only fixes STATE for
+        // *this* load -- the stale draft is still what's in storage, so the
+        // very next reload would see it as unedited again, compare it
+        // against a lastSeen that's moved on again, and could even regress
+        // this load's correction straight back out. Writing the adopted
+        // result back now is what actually heals the stored draft, not
+        // just this one load's in-memory STATE. (STATE itself isn't
+        // assigned yet at this point -- this call is before `let STATE =
+        // loadState()` runs -- so this writes `result` directly rather
+        // than going through the usual saveState(), which reads STATE.)
+        if (songsUnedited || setlistsUnedited || printPrefsUnedited){
+          localStorage.setItem(STORE_KEY, JSON.stringify(result));
+        }
+        return result;
       }
       return { songs: seedState().songs, setlists: seedState().setlists, printPrefs: seedState().printPrefs, settings: saved.settings || {} };
     }
