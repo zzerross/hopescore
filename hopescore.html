@@ -1858,7 +1858,14 @@ function setDefaultFitMode(v){
   STATE.settings.fitMode = v;
   saveState();
 }
-const VIDEO_SIZES = {small:130, medium:180, large:260};
+// The only width actually confirmed (on a real device) to play inline
+// without bouncing out to the YouTube app is 260 (the old "large") -- S/M
+// below that reportedly trigger the app-open fallback instead, which
+// matches YouTube's own embedded player needing a minimum rendered size
+// for its native controls to be interactive. Rather than guess at exactly
+// where between 180 and 260 that line falls, every option now starts at
+// the one width with real confirmation and scales up from there.
+const VIDEO_SIZES = {small:260, medium:320, large:400};
 function getVideoSize(){ return STATE.settings.videoSize || 'medium'; }
 function setVideoSize(v){
   STATE.settings.videoSize = v;
