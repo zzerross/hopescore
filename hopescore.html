@@ -3169,12 +3169,22 @@ function renderSongView(songId){
     // playsinline=1 is YouTube's own documented embed parameter for this
     // exact symptom (tapping the thumbnail bounces out to the native app
     // instead of playing inline) -- it's been requested on mobile browsers
-    // generally, not just iOS Safari where it originates. This embed URL
-    // itself hasn't otherwise changed since the video feature was first
-    // built, so a video that still bounces out after this is most likely
-    // one whose uploader has restricted embedding elsewhere, which no
-    // query parameter here can override.
-    document.getElementById('videoIframe').src = `https://www.youtube-nocookie.com/embed/${v.ytId}?playsinline=1`;
+    // generally, not just iOS Safari where it originates. A video that
+    // still bounces out after this is most likely one whose uploader has
+    // restricted embedding elsewhere, which no query parameter here can
+    // override.
+    // youtube.com, not youtube-nocookie.com: the "-nocookie" domain is
+    // YouTube's own privacy-enhanced mode, built specifically to withhold
+    // the viewer's regular YouTube session (and so never shows them as
+    // signed in, ad-free Premium included) until they interact with the
+    // player -- that's its whole purpose, not a bug. Reported: the exact
+    // same browser plays ad-free on youtube.com directly but shows ads
+    // here, which matches this precisely. Using the regular domain lets
+    // the viewer's own session (and any ad-free entitlement on it) carry
+    // into the embed instead, at the cost of the no-cookie mode's "no
+    // tracking cookie set until play" property -- a reasonable trade for a
+    // small internal team tool, not a public site needing that guarantee.
+    document.getElementById('videoIframe').src = `https://www.youtube.com/embed/${v.ytId}?playsinline=1`;
   }
   if (showVideo){
     paintVideo();
