@@ -2057,6 +2057,24 @@ function confirmModal(title, message, confirmLabel='Delete'){
     document.getElementById('modalOk').onclick = ()=>{ closeModal(); resolve(true); };
   });
 }
+// A one-button, no-escape-hatch version of confirmModal() -- for a stop
+// that explains itself but genuinely cannot be clicked through. Used for
+// the wrong-host publish guard below: a "Continue anyway" button there
+// would give zero real protection against the exact failure mode it
+// exists to catch (someone clicking straight through a dialog without
+// reading it, in a hurry or by habit).
+function alertModal(title, message){
+  return new Promise((resolve)=>{
+    modalBox.innerHTML = `
+      <h3>${escapeHtml(title)}</h3>
+      <p class="msg">${escapeHtml(message)}</p>
+      <div class="modal-actions">
+        <button class="iconbtn primary" id="modalOk">Close</button>
+      </div>`;
+    modalBackdrop.classList.add('open');
+    document.getElementById('modalOk').onclick = ()=>{ closeModal(); resolve(); };
+  });
+}
 // The single entry point from the banner: an itemized, one-line-per-change
 // list. Tapping a line toggles it between + (published) and − (discarded --
 // struck through) -- everything starts at + (default: publish everything,
@@ -3773,19 +3791,23 @@ async function publishToGithub(){
   // reuses a token they already have on hand for a *different* team's repo
   // -- say, a developer who's also an editor on this team -- would silently
   // publish to that OTHER repo, using that token's real write access to it,
-  // the moment they click Publish here. Skipped for local dev/testing
-  // (file://, localhost, 127.0.0.1), since that's not the scenario this
-  // guards against and every local test harness runs from there.
+  // the moment they click Publish here. A dismissible confirm here would
+  // give approximately zero protection against exactly the failure mode
+  // this exists to catch -- someone clicking straight through without
+  // reading, in a hurry or out of habit -- so this is a hard stop with no
+  // "continue anyway" path at all, not a warning. Skipped for local
+  // dev/testing (file://, localhost, 127.0.0.1), since that's not the
+  // scenario this guards against and every local test harness runs from
+  // there.
   const host = location.hostname;
   const isLocalHost = !host || host === 'localhost' || host === '127.0.0.1';
   const expectedHost = `${GH_REPO_OWNER.toLowerCase()}.github.io`;
   if (!isLocalHost && host.toLowerCase() !== expectedHost){
-    const proceed = await confirmModal(
-      'This page is not hosted where it publishes to',
-      `This page is running at ${host}, but it's configured to publish to ${GH_REPO_OWNER}/${GH_REPO_NAME} on GitHub -- a different site entirely. If this is a fork that hasn't updated its GH_REPO_OWNER/GH_REPO_NAME yet, continuing would write to that OTHER repo, not this one, using whatever token was just entered. Only continue if that's really what you mean to do.`,
-      'Continue anyway'
+    await alertModal(
+      'Publish blocked -- wrong host',
+      `This page is running at ${host}, but it's configured to publish to ${GH_REPO_OWNER}/${GH_REPO_NAME} on GitHub -- a different site entirely. That's almost certainly a forked copy that hasn't updated its GH_REPO_OWNER/GH_REPO_NAME constants yet (see CLAUDE.md). Publishing has been blocked to avoid writing to the wrong repo -- fix those constants (or deploy this page at ${expectedHost}) and try again.`
     );
-    if (!proceed) return;
+    return;
   }
   // Publish and Discard (see the banner) are both plain, single-click,
   // act-on-everything actions -- no per-category selection step here.

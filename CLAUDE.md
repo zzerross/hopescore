@@ -32,9 +32,11 @@ Do these **before** anything else, in order:
    have on hand while testing your fork. That token has real write access
    to the original repo, and publishing from your unconfigured fork would
    silently overwrite its live content. `publishToGithub()` has a safety
-   net for exactly this (a loud confirm when the page's actual hosting
-   domain doesn't match `GH_REPO_OWNER`'s expected `*.github.io`), but
-   that's a last-resort catch, not a substitute for changing the constant.
+   net for exactly this: when the page's actual hosting domain doesn't
+   match `GH_REPO_OWNER`'s expected `*.github.io`, it hard-blocks the
+   publish entirely — a single-button "Close" modal, no "continue anyway,"
+   no way to proceed. That's a last-resort catch, not a substitute for
+   changing the constant.
 2. **Enable GitHub Pages on your fork.** Repo Settings → Pages → Deploy
    from branch → `main` / root. This is a manual step in GitHub's web UI;
    no amount of editing the repo does this for you.
@@ -190,15 +192,23 @@ now fixed, but worth understanding why):
   Don't build anything that assumes a song or setlist's "owner" can be
   reliably identified beyond the free-text editor name stamped on the git
   commit. Because the token is shared, `publishToGithub()` checks
-  `location.hostname` against `GH_REPO_OWNER` before publishing and shows
-  an extra confirm if they don't match (skipped for `file://`/localhost/
-  `127.0.0.1`, so it never fires during local dev or the Playwright-based
-  testing described below) — this is what actually catches a fork that
-  forgot to update those constants, not just the README telling people to
-  do it. If you ever change what `GH_REPO_OWNER` means or how the page is
-  hosted (e.g. a custom domain via a `CNAME` file), update this check too,
-  or it'll either stop firing when it should or start firing on your own
-  legitimate deploy.
+  `location.hostname` against `GH_REPO_OWNER` before publishing and
+  **hard-blocks the publish** if they don't match — a single-button
+  "Close" alert with no bypass, not a dismissible confirm. It's deliberately
+  not a warning someone can click through: a confirm with a "continue
+  anyway" button protects nobody, since the only people who'd ever see it
+  are either a legitimate editor on the real site (who never sees it at
+  all, because their hostname always matches) or exactly the fork-owner/
+  mistaken-token case it exists to stop — and that case would just click
+  through too. So there's no second button; publishing simply doesn't
+  happen on a mismatch, period. The check is skipped for `file://`/
+  localhost/`127.0.0.1`, so it never fires during local dev or the
+  Playwright-based testing described below. This is what actually catches
+  a fork that forgot to update those constants, not just the README
+  telling people to do it. If you ever change what `GH_REPO_OWNER` means
+  or how the page is hosted (e.g. a custom domain via a `CNAME` file),
+  update this check too, or it'll either stop firing when it should or
+  start firing on your own legitimate deploy.
 - **No automated test suite or CI ships in this repo.** Verification
   during development has consistently been ad-hoc Playwright scripts
   (headless Chromium), written per-change and run manually — not checked
