@@ -26,9 +26,15 @@ Do these **before** anything else, in order:
    ```
    Change `GH_REPO_OWNER`/`GH_REPO_NAME` to your fork. **If you skip this,
    the in-app "Publish" button will try to commit to the original repo**
-   using whatever GitHub token your editors enter — it'll just fail with a
-   permission error for most people, but don't rely on that; change it
-   first.
+   using whatever GitHub token your editors enter. For most people that
+   just fails with a permission error — but not for someone who happens to
+   also be an editor on the *original* team and reuses a token they already
+   have on hand while testing your fork. That token has real write access
+   to the original repo, and publishing from your unconfigured fork would
+   silently overwrite its live content. `publishToGithub()` has a safety
+   net for exactly this (a loud confirm when the page's actual hosting
+   domain doesn't match `GH_REPO_OWNER`'s expected `*.github.io`), but
+   that's a last-resort catch, not a substitute for changing the constant.
 2. **Enable GitHub Pages on your fork.** Repo Settings → Pages → Deploy
    from branch → `main` / root. This is a manual step in GitHub's web UI;
    no amount of editing the repo does this for you.
@@ -183,7 +189,16 @@ now fixed, but worth understanding why):
 - **This is a single shared GitHub token model**, not per-user auth.
   Don't build anything that assumes a song or setlist's "owner" can be
   reliably identified beyond the free-text editor name stamped on the git
-  commit.
+  commit. Because the token is shared, `publishToGithub()` checks
+  `location.hostname` against `GH_REPO_OWNER` before publishing and shows
+  an extra confirm if they don't match (skipped for `file://`/localhost/
+  `127.0.0.1`, so it never fires during local dev or the Playwright-based
+  testing described below) — this is what actually catches a fork that
+  forgot to update those constants, not just the README telling people to
+  do it. If you ever change what `GH_REPO_OWNER` means or how the page is
+  hosted (e.g. a custom domain via a `CNAME` file), update this check too,
+  or it'll either stop firing when it should or start firing on your own
+  legitimate deploy.
 - **No automated test suite or CI ships in this repo.** Verification
   during development has consistently been ad-hoc Playwright scripts
   (headless Chromium), written per-change and run manually — not checked

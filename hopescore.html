@@ -3766,6 +3766,27 @@ async function publishToGithub(){
   const editorName = getGhEditorName();
   if (!token || !editorName){ openGhSettingsModal(()=> publishToGithub()); return; }
   if (!hasUnpublishedChanges()){ toast('Nothing to publish'); return; }
+  // Catches a page whose GH_REPO_OWNER/GH_REPO_NAME still point somewhere
+  // other than where this page is actually hosted -- almost certainly a
+  // forked copy that never updated them (see CLAUDE.md's "If you just
+  // forked this repo" checklist). Without this, someone testing a fork who
+  // reuses a token they already have on hand for a *different* team's repo
+  // -- say, a developer who's also an editor on this team -- would silently
+  // publish to that OTHER repo, using that token's real write access to it,
+  // the moment they click Publish here. Skipped for local dev/testing
+  // (file://, localhost, 127.0.0.1), since that's not the scenario this
+  // guards against and every local test harness runs from there.
+  const host = location.hostname;
+  const isLocalHost = !host || host === 'localhost' || host === '127.0.0.1';
+  const expectedHost = `${GH_REPO_OWNER.toLowerCase()}.github.io`;
+  if (!isLocalHost && host.toLowerCase() !== expectedHost){
+    const proceed = await confirmModal(
+      'This page is not hosted where it publishes to',
+      `This page is running at ${host}, but it's configured to publish to ${GH_REPO_OWNER}/${GH_REPO_NAME} on GitHub -- a different site entirely. If this is a fork that hasn't updated its GH_REPO_OWNER/GH_REPO_NAME yet, continuing would write to that OTHER repo, not this one, using whatever token was just entered. Only continue if that's really what you mean to do.`,
+      'Continue anyway'
+    );
+    if (!proceed) return;
+  }
   // Publish and Discard (see the banner) are both plain, single-click,
   // act-on-everything actions -- no per-category selection step here.
   // Checking *what* is about to happen is its own separate, view-only
