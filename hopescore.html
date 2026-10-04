@@ -3675,12 +3675,39 @@ document.addEventListener('keydown', (e)=>{
    using their own personal access token stored only in this browser (never
    sent anywhere but directly to api.github.com, never part of STATE/export).
    ========================================================================= */
-// This deployment always targets the same repo, so only the token (which is
-// per-person and secret) is ever asked for -- everything else is fixed here.
-const GH_REPO_OWNER = 'zzerross';
-const GH_REPO_NAME = 'hopescore';
-const GH_REPO_BRANCH = 'main';
+// This deployment targets whatever repo it's actually being served from,
+// read straight back out of the page's own URL -- a fork gets publish
+// pointed at itself with no constant to edit, as long as it's hosted at
+// the standard GitHub Pages address. GitHub Pages URLs are predictable: a
+// project page is always <owner>.github.io/<repo>/..., and the one
+// user/org page per account (whose repo must be named exactly
+// <owner>.github.io) is always served at the domain root -- that's enough
+// to read owner+repo back out of location.hostname/pathname, no network
+// call needed. The branch doesn't need deriving at all: the Contents API
+// below already defaults every request to the repo's own default branch
+// whenever no ref/branch parameter is given, so this code just omits it.
+//
+// The one setup this can't see through is a custom domain (a CNAME file)
+// -- there's no owner/repo encoded in an arbitrary hostname. Fill in the
+// matching *_OVERRIDE below for that case; leave both blank to auto-detect.
+const GH_REPO_OWNER_OVERRIDE = '';
+const GH_REPO_NAME_OVERRIDE = '';
 const GH_FILE_PATH = 'hopescore.html';
+
+function inferGhRepoFromLocation(){
+  const m = location.hostname.match(/^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.github\.io$/i);
+  if (!m) return null; // custom domain, file://, localhost -- can't infer from here
+  const owner = m[1];
+  const firstSeg = location.pathname.split('/').filter(Boolean)[0];
+  // A first path segment that isn't itself the html file being served is a
+  // project-page repo name; anything else (root, or the file right at
+  // root) means this is the one-per-account user/org page.
+  const repo = (firstSeg && !/\.html?$/i.test(firstSeg)) ? firstSeg : `${owner}.github.io`;
+  return { owner, repo };
+}
+const GH_REPO_INFERRED = inferGhRepoFromLocation();
+const GH_REPO_OWNER = GH_REPO_OWNER_OVERRIDE || (GH_REPO_INFERRED ? GH_REPO_INFERRED.owner : 'zzerross');
+const GH_REPO_NAME = GH_REPO_NAME_OVERRIDE || (GH_REPO_INFERRED ? GH_REPO_INFERRED.repo : 'hopescore');
 
 function utf8ToBase64(str){ return btoa(unescape(encodeURIComponent(str))); }
 function base64ToUtf8(b64){ return decodeURIComponent(escape(atob(b64.replace(/\n/g,'')))); }
@@ -3784,21 +3811,23 @@ async function publishToGithub(){
   const editorName = getGhEditorName();
   if (!token || !editorName){ openGhSettingsModal(()=> publishToGithub()); return; }
   if (!hasUnpublishedChanges()){ toast('Nothing to publish'); return; }
-  // Catches a page whose GH_REPO_OWNER/GH_REPO_NAME still point somewhere
-  // other than where this page is actually hosted -- almost certainly a
-  // forked copy that never updated them (see CLAUDE.md's "If you just
-  // forked this repo" checklist). Without this, someone testing a fork who
-  // reuses a token they already have on hand for a *different* team's repo
-  // -- say, a developer who's also an editor on this team -- would silently
-  // publish to that OTHER repo, using that token's real write access to it,
-  // the moment they click Publish here. A dismissible confirm here would
-  // give approximately zero protection against exactly the failure mode
-  // this exists to catch -- someone clicking straight through without
-  // reading, in a hurry or out of habit -- so this is a hard stop with no
-  // "continue anyway" path at all, not a warning. Skipped for local
-  // dev/testing (file://, localhost, 127.0.0.1), since that's not the
-  // scenario this guards against and every local test harness runs from
-  // there.
+  // GH_REPO_OWNER/NAME are auto-detected from location above, so in the
+  // common case this can't actually mismatch itself -- this guard exists
+  // for the two cases auto-detection doesn't cover: an explicit *_OVERRIDE
+  // left pointing somewhere other than where this page is actually hosted,
+  // or a custom domain (no owner/repo encoded in an arbitrary hostname, so
+  // it falls back to the hardcoded 'zzerross' default above). Either way,
+  // someone testing such a page who reuses a token they already have on
+  // hand for a *different* team's repo -- say, a developer who's also an
+  // editor on this team -- would otherwise silently publish to that OTHER
+  // repo, using that token's real write access to it, the moment they
+  // click Publish here. A dismissible confirm here would give approximately
+  // zero protection against exactly the failure mode this exists to catch
+  // -- someone clicking straight through without reading, in a hurry or out
+  // of habit -- so this is a hard stop with no "continue anyway" path at
+  // all, not a warning. Skipped for local dev/testing (file://, localhost,
+  // 127.0.0.1), since that's not the scenario this guards against and
+  // every local test harness runs from there.
   const host = location.hostname;
   const isLocalHost = !host || host === 'localhost' || host === '127.0.0.1';
   const expectedHost = `${GH_REPO_OWNER.toLowerCase()}.github.io`;
@@ -3816,13 +3845,15 @@ async function publishToGithub(){
   // decision Publish forces on every click; the risk with combining them
   // was that a click would linger with categories still unresolved instead
   // of just publishing, and Discard already covers "actually, none of it."
-  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} (${GH_REPO_BRANCH}) with the current song list, setlist, and print layout -- live for everyone who opens the hosted site. ${unpublishedChangesSummary()}. Continue?`, 'Publish');
+  const ok = await confirmModal('Publish to GitHub', `This updates ${GH_REPO_OWNER}/${GH_REPO_NAME} with the current song list, setlist, and print layout -- live for everyone who opens the hosted site. ${unpublishedChangesSummary()}. Continue?`, 'Publish');
   if (!ok) return;
   toast('Publishing…');
   try{
     const apiBase = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/contents/${GH_FILE_PATH}`;
     const authHeaders = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' };
-    const getRes = await fetch(`${apiBase}?ref=${encodeURIComponent(GH_REPO_BRANCH)}`, { headers: authHeaders });
+    // No ref param: the Contents API defaults to the repo's own default
+    // branch, so this works regardless of what that branch is named.
+    const getRes = await fetch(apiBase, { headers: authHeaders });
     if (!getRes.ok) throw new Error(`Couldn't read the file from GitHub (${getRes.status})`);
     const fileData = await getRes.json();
     const currentText = base64ToUtf8(fileData.content);
@@ -3885,7 +3916,8 @@ async function publishToGithub(){
         message: `Update songs & setlist from HopeScore app (${STATE.songs.length} songs) — ${editorName}`,
         content: utf8ToBase64(newText),
         sha: fileData.sha,
-        branch: GH_REPO_BRANCH,
+        // No branch param here either, for the same reason as the GET
+        // above -- omitting it commits to the repo's own default branch.
         author: { name: editorName, email: authorEmail },
       }),
     });

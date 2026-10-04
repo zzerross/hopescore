@@ -15,40 +15,45 @@ rediscover them the hard way.
 
 Do these **before** anything else, in order:
 
-1. **Point the publish feature at your own fork.** `hopescore.html` has four
-   hardcoded constants, in the "9. GitHub publish" section near the bottom
-   of the script:
-   ```js
-   const GH_REPO_OWNER = 'zzerross';
-   const GH_REPO_NAME = 'hopescore';
-   const GH_REPO_BRANCH = 'main';
-   const GH_FILE_PATH = 'hopescore.html';
-   ```
-   Change `GH_REPO_OWNER`/`GH_REPO_NAME` to your fork. **If you skip this,
-   the in-app "Publish" button will try to commit to the original repo**
-   using whatever GitHub token your editors enter. For most people that
-   just fails with a permission error — but not for someone who happens to
-   also be an editor on the *original* team and reuses a token they already
-   have on hand while testing your fork. That token has real write access
-   to the original repo, and publishing from your unconfigured fork would
-   silently overwrite its live content. `publishToGithub()` has a safety
-   net for exactly this: when the page's actual hosting domain doesn't
-   match `GH_REPO_OWNER`'s expected `*.github.io`, it hard-blocks the
-   publish entirely — a single-button "Close" modal, no "continue anyway,"
-   no way to proceed. That's a last-resort catch, not a substitute for
-   changing the constant.
-2. **Enable GitHub Pages on your fork.** Repo Settings → Pages → Deploy
+1. **Enable GitHub Pages on your fork.** Repo Settings → Pages → Deploy
    from branch → `main` / root. This is a manual step in GitHub's web UI;
    no amount of editing the repo does this for you.
-3. **Decide what to do with the seed data.** The file ships with one
+2. **Decide what to do with the seed data.** The file ships with one
    team's actual songs and weekly setlists baked in (see "Seed data" below)
    as a working example. Either replace it with your own songs or clear it
    out — see that section for how.
-4. **Rename the app** if you want your own team's name instead of
+3. **Rename the app** if you want your own team's name instead of
    "HopeScore" — it appears in the `<title>` tag in both `hopescore.html`
    and `index.html`, and in the publish commit message template
    (`` `Update songs & setlist from HopeScore app...` `` in section 9).
    Cosmetic only, safe to change anytime.
+
+That's it — **you don't need to touch the publish target.** `hopescore.html`
+has two override constants in the "9. GitHub publish" section near the
+bottom of the script:
+```js
+const GH_REPO_OWNER_OVERRIDE = '';
+const GH_REPO_NAME_OVERRIDE = '';
+const GH_FILE_PATH = 'hopescore.html';
+```
+Left blank (the default), `GH_REPO_OWNER`/`GH_REPO_NAME` are inferred from
+`location.hostname`/`location.pathname` at load time — GitHub Pages URLs are
+predictable enough (`<owner>.github.io/<repo>/...` for a project page, or
+just `<owner>.github.io/` for the one user/org page per account) that the
+page can read its own owner/repo back out of where it's actually hosted, no
+constant to edit and no network call needed. The branch doesn't need
+figuring out either — the GitHub Contents API already defaults to the
+repo's own default branch whenever a request omits `ref`/`branch`, so the
+code just omits it. Fork, enable Pages, and publish already points at
+*your* repo.
+
+The only setup this can't see through is a **custom domain** (a `CNAME`
+file) — there's no owner/repo encoded in an arbitrary hostname, so it falls
+back to the original `zzerross`/`hopescore` default and you'll need to fill
+in the matching `*_OVERRIDE` constant yourself. If you skip that step on a
+custom domain, `publishToGithub()` hard-blocks publishing rather than
+risk writing to the wrong repo — see "Known traps" below for exactly when
+that guard fires and why it has no bypass.
 
 Everything else below is context for actually working on the code, not more
 one-time setup.
@@ -191,24 +196,35 @@ now fixed, but worth understanding why):
 - **This is a single shared GitHub token model**, not per-user auth.
   Don't build anything that assumes a song or setlist's "owner" can be
   reliably identified beyond the free-text editor name stamped on the git
-  commit. Because the token is shared, `publishToGithub()` checks
-  `location.hostname` against `GH_REPO_OWNER` before publishing and
-  **hard-blocks the publish** if they don't match — a single-button
-  "Close" alert with no bypass, not a dismissible confirm. It's deliberately
-  not a warning someone can click through: a confirm with a "continue
-  anyway" button protects nobody, since the only people who'd ever see it
-  are either a legitimate editor on the real site (who never sees it at
-  all, because their hostname always matches) or exactly the fork-owner/
-  mistaken-token case it exists to stop — and that case would just click
-  through too. So there's no second button; publishing simply doesn't
-  happen on a mismatch, period. The check is skipped for `file://`/
-  localhost/`127.0.0.1`, so it never fires during local dev or the
-  Playwright-based testing described below. This is what actually catches
-  a fork that forgot to update those constants, not just the README
-  telling people to do it. If you ever change what `GH_REPO_OWNER` means
+  commit.
+- **`GH_REPO_OWNER`/`GH_REPO_NAME` are inferred from `location`, not
+  hardcoded** (see "If you just forked this repo" above) — `inferGhRepoFromLocation()`
+  reads them back out of `location.hostname`/`location.pathname` using
+  GitHub Pages' own predictable URL shape, so a plain fork at a standard
+  `*.github.io` address publishes to itself with zero constants to edit.
+  This means a fork can never *accidentally* point at the original repo
+  just by forgetting to update a constant — there's no constant to forget.
+  What's left is the narrower case: a custom domain, where inference can't
+  recover any owner/repo from an arbitrary hostname and falls back to the
+  hardcoded `zzerross`/`hopescore` default, or someone explicitly setting a
+  `*_OVERRIDE` that doesn't match where the page is actually hosted. For
+  those, `publishToGithub()` checks `location.hostname` against the
+  resolved `GH_REPO_OWNER` before publishing and **hard-blocks the
+  publish** if they don't match — a single-button "Close" alert with no
+  bypass, not a dismissible confirm. It's deliberately not a warning
+  someone can click through: a confirm with a "continue anyway" button
+  protects nobody, since the only people who'd ever see it are either a
+  legitimate editor on the real site (who never sees it at all, because
+  their hostname always matches) or exactly the custom-domain/mistaken-
+  token case it exists to stop — and that case would just click through
+  too. So there's no second button; publishing simply doesn't happen on a
+  mismatch, period. The check is skipped for `file://`/localhost/
+  `127.0.0.1`, so it never fires during local dev or the Playwright-based
+  testing described below. If you ever change what `GH_REPO_OWNER` means
   or how the page is hosted (e.g. a custom domain via a `CNAME` file),
-  update this check too, or it'll either stop firing when it should or
-  start firing on your own legitimate deploy.
+  update `inferGhRepoFromLocation()` and this check too, or it'll either
+  stop firing when it should or start firing on your own legitimate
+  deploy.
 - **No automated test suite or CI ships in this repo.** Verification
   during development has consistently been ad-hoc Playwright scripts
   (headless Chromium), written per-change and run manually — not checked
