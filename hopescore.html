@@ -1150,8 +1150,10 @@ function ghLogout(){ clearGhToken(); clearGhEditorName(); }
 
 // A normalized, order-independent fingerprint of a song list -- used to spot
 // whether an editor's local copy has actually diverged from the currently
-// published version (createdAt/updatedAt excluded since seedState() stamps
-// those fresh every call and they'd make everything look "changed").
+// published version (createdAt/updatedAt deliberately excluded -- they're
+// metadata for the library sort, not content, so a sync-only timestamp
+// difference between two otherwise-identical copies shouldn't itself count
+// as an edit).
 function songsSignature(songs){
   return JSON.stringify(
     songs.map(s => ({ id: s.id, title: s.title, keySemitone: s.keySemitone, keyIsMinor: s.keyIsMinor, keyPreferFlat: s.keyPreferFlat, description: s.description, body: s.body, videos: s.videos||[] }))
@@ -1886,8 +1888,16 @@ function seedState(){
   "showSections": true
 };
   /* SEED_PRINT_END */
+  // Only fills in createdAt/updatedAt when a song doesn't already have them
+  // (true for every song published before these fields existed, or a
+  // locally-created song that hasn't been through seedState() yet) --
+  // publishToGithub() now carries real values through, so overwriting them
+  // here unconditionally would erase genuine edit history on every load.
   const now = Date.now();
-  for (const s of seedSongs){ s.createdAt = now; s.updatedAt = now; }
+  for (const s of seedSongs){
+    if (!s.createdAt) s.createdAt = now;
+    if (!s.updatedAt) s.updatedAt = now;
+  }
   return {
     songs: seedSongs,
     setlists: seedSetlists,
@@ -3980,6 +3990,12 @@ async function publishToGithub(){
       if (s.keyPreferFlat !== undefined) out.keyPreferFlat = s.keyPreferFlat;
       if (s.videos && s.videos.length) out.videos = s.videos.map(v=>({url:v.url, key:v.key||'', label:v.label||''}));
       out.description = s.description; out.body = s.body; out.id = s.id;
+      // Carried through so "Recently added/edited" sort (see
+      // compareSongsForLibrary()) reflects real history across devices --
+      // seedState() below only fills these in when missing, it doesn't
+      // stamp over real values, so once a song's timestamps are published
+      // once they stay stable from here on.
+      out.createdAt = s.createdAt; out.updatedAt = s.updatedAt;
       return out;
     });
     const newBlock = `${startMarker}\n  const seedSongs = ${JSON.stringify(songsForExport, null, 2)};\n  ${endMarker}`;
