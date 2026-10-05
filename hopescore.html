@@ -137,6 +137,12 @@
     width:100%; margin-bottom:6px; padding:10px 14px; border-radius:9px;
     border:1px solid var(--paper-line); background:var(--surface); color:var(--ink); font-size:14px;
   }
+  .library-sort{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .library-sort select{
+    flex:1; height:36px; padding:0 10px; border-radius:8px;
+    border:1px solid var(--paper-line); background:var(--surface); color:var(--ink); font-size:13px;
+  }
+  .library-sort .iconbtn{ flex-shrink:0; width:36px; padding:0; font-size:15px; }
   .song-list{ border-top:1px solid var(--paper-line); }
   .song-row{
     display:grid; grid-template-columns:30px 20px 1fr; align-items:center; gap:14px;
@@ -221,7 +227,7 @@
   .calendar-today-btn:hover{ border-color:var(--focus); }
   .setlist-row{ grid-template-columns:30px 20px 1fr auto; }
   .setlist-row.editable{ grid-template-columns:30px 20px 1fr auto auto; }
-  .setlist-row .pill{ flex-shrink:0; }
+  .setlist-row .pill, .library-row .pill{ flex-shrink:0; }
   .row-controls{ display:flex; gap:4px; }
   .row-controls button{
     width:26px; height:26px; border-radius:6px; border:1px solid var(--paper-line);
@@ -236,6 +242,12 @@
   /* Library rows have no per-row badge for a non-editor (setlist membership
      can't be changed without logging in), so they only need the icon + title. */
   .song-row.simple{ grid-template-columns:20px 1fr; }
+  /* Library rows show the key pill too -- a "sort by Key" view is only
+     useful if you can actually see which key each row is in. The combined
+     selector below must come after .song-row.simple to win on specificity
+     for a non-editor row (which carries both classes). */
+  .song-row.library-row{ grid-template-columns:30px 20px 1fr auto; }
+  .song-row.simple.library-row{ grid-template-columns:20px 1fr auto; }
 
   /* ---------- editor view ---------- */
   .editor-grid{ display:grid; grid-template-columns:360px 1fr; gap:28px; align-items:start; }
@@ -1991,6 +2003,18 @@ function setYoutubeEnabled(v){
   STATE.settings.youtubeEnabled = !!v;
   saveState();
 }
+// "All songs" library list sort order (see compareSongsForLibrary() in
+// section 6) -- device-wide and persisted like the other display prefs
+// above, not published: each browser remembers its own sort, independent
+// of every other editor/viewer's.
+function getLibrarySort(){
+  return { by: STATE.settings.librarySortBy || 'alpha', dir: STATE.settings.librarySortDir || 'asc' };
+}
+function setLibrarySort(by, dir){
+  STATE.settings.librarySortBy = by;
+  STATE.settings.librarySortDir = dir;
+  saveState();
+}
 // Present (fullscreen) view is built from three independent toggles rather
 // than one fixed preset, so any combination is possible -- e.g. the dark
 // stage theme with chords still shown, or plain lyrics with no part labels
@@ -2207,6 +2231,42 @@ function getSongVideos(song){
 // a video that the song screen itself wouldn't actually show.
 function songHasVideo(song){
   return getSongVideos(song).some(v => parseYoutubeId(v.url));
+}
+// Sort options for the "All songs" library list (see getLibrarySort() in
+// section 4 for the persisted by/dir, and paintLibrary() in renderHomeView
+// for where this gets applied). Each case defines its own natural
+// ascending order; ties always fall back to title so the result is stable
+// and never looks shuffled within a group.
+const LIBRARY_SORT_LABELS = {
+  recent: 'Recently added/edited',
+  alpha: 'Title (A-Z)',
+  key: 'Key',
+  video: 'Has video',
+};
+function librarySortTitleKey(song){ return splitTitleArtist(song.title).main.toLowerCase(); }
+function compareSongsForLibrary(a, b, by){
+  switch(by){
+    case 'recent': {
+      const d = (a.updatedAt||a.createdAt||0) - (b.updatedAt||b.createdAt||0);
+      return d !== 0 ? d : librarySortTitleKey(a).localeCompare(librarySortTitleKey(b));
+    }
+    case 'key': {
+      if (a.keySemitone !== b.keySemitone) return a.keySemitone - b.keySemitone;
+      if (!!a.keyIsMinor !== !!b.keyIsMinor) return (a.keyIsMinor?1:0) - (b.keyIsMinor?1:0);
+      return librarySortTitleKey(a).localeCompare(librarySortTitleKey(b));
+    }
+    case 'video': {
+      const av = songHasVideo(a) ? 1 : 0, bv = songHasVideo(b) ? 1 : 0;
+      return av !== bv ? av - bv : librarySortTitleKey(a).localeCompare(librarySortTitleKey(b));
+    }
+    case 'alpha':
+    default:
+      return librarySortTitleKey(a).localeCompare(librarySortTitleKey(b));
+  }
+}
+function sortSongsForLibrary(songs, by, dir){
+  const sorted = [...songs].sort((a,b)=> compareSongsForLibrary(a,b,by));
+  return dir === 'desc' ? sorted.reverse() : sorted;
 }
 function computeSongRows(song, mode, targetVal){
   const blocks = parseBody(song.body, getCollapseBlanks());
@@ -2654,6 +2714,15 @@ function renderHomeView(date){
   search.className = 'search'; search.placeholder = 'Search song titles…'; search.id = 'searchInput';
   wrap.appendChild(search);
 
+  const sortRow = document.createElement('div');
+  sortRow.className = 'library-sort';
+  sortRow.innerHTML = `
+    <select id="librarySortBy" title="Sort the song list by">
+      ${Object.entries(LIBRARY_SORT_LABELS).map(([k,label])=>`<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('')}
+    </select>
+    <button class="iconbtn" id="librarySortDir" type="button"></button>`;
+  wrap.appendChild(sortRow);
+
   const libraryEl = document.createElement('div');
   libraryEl.className = 'song-list';
   wrap.appendChild(libraryEl);
@@ -2716,7 +2785,8 @@ function renderHomeView(date){
     libraryEl.innerHTML = '';
     const q = (filter||'').trim().toLowerCase();
     const setlistIds = STATE.setlists[date] || [];
-    const songs = STATE.songs.filter(s=> !q || s.title.toLowerCase().includes(q));
+    const { by, dir } = getLibrarySort();
+    const songs = sortSongsForLibrary(STATE.songs.filter(s=> !q || s.title.toLowerCase().includes(q)), by, dir);
     if (songs.length===0){
       const emptyMsg = STATE.songs.length ? 'No songs match your search'
         : (editor ? 'No songs yet. Tap "+" to add your first one.' : 'No songs yet.');
@@ -2726,11 +2796,12 @@ function renderHomeView(date){
     for (const s of songs){
       const idx = setlistIds.indexOf(s.id);
       const row = document.createElement('div');
-      row.className = editor ? 'song-row' : 'song-row simple';
+      row.className = editor ? 'song-row library-row' : 'song-row simple library-row';
       row.innerHTML = `
         ${editor ? `<button class="song-badge ${idx===-1?'':'assigned'}" data-act="toggle" title="${idx===-1?"Add to this date's setlist":"Remove from this date's setlist"}">${idx===-1?'':idx+1}</button>` : ''}
         <span class="song-video-icon" title="${songHasVideo(s)?'Has a reference video':''}">${songHasVideo(s)?'📺':''}</span>
-        <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>`;
+        <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>
+        <span class="pill">${escapeHtml(songKeyLabel(s))}</span>`;
       row.addEventListener('click', (e)=>{
         if (e.target.closest('[data-act]')) return;
         go({view:'song', songId:s.id, date});
@@ -2751,6 +2822,30 @@ function renderHomeView(date){
   function paintAll(){ paintSetlist(); paintLibrary(search.value); }
   paintAll();
   search.addEventListener('input', ()=> paintLibrary(search.value));
+
+  // "All songs" sort order -- persisted per-browser (getLibrarySort() reads
+  // from STATE.settings, which never publishes), so each editor/viewer can
+  // sort their own list without touching anyone else's.
+  const sortBySelect = sortRow.querySelector('#librarySortBy');
+  const sortDirBtn = sortRow.querySelector('#librarySortDir');
+  function paintSortControls(){
+    const { by, dir } = getLibrarySort();
+    sortBySelect.value = by;
+    sortDirBtn.textContent = dir === 'desc' ? '↓' : '↑';
+    sortDirBtn.title = dir === 'desc' ? 'Descending -- click to reverse' : 'Ascending -- click to reverse';
+  }
+  paintSortControls();
+  sortBySelect.addEventListener('change', ()=>{
+    setLibrarySort(sortBySelect.value, getLibrarySort().dir);
+    paintSortControls();
+    paintLibrary(search.value);
+  });
+  sortDirBtn.addEventListener('click', ()=>{
+    const { by, dir } = getLibrarySort();
+    setLibrarySort(by, dir === 'desc' ? 'asc' : 'desc');
+    paintSortControls();
+    paintLibrary(search.value);
+  });
 
   btnPresentHome.addEventListener('click', ()=> openPresent(STATE.setlists[date] || [], 0));
   btnShareSetlist.addEventListener('click', ()=>{
