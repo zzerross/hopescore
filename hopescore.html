@@ -143,6 +143,12 @@
     border:1px solid var(--paper-line); background:var(--surface); color:var(--ink); font-size:13px;
   }
   .library-sort .iconbtn{ flex-shrink:0; width:36px; padding:0; font-size:15px; }
+  .select-all-check, .song-select{ width:17px; height:17px; flex-shrink:0; cursor:pointer; accent-color:var(--accent); }
+  .library-select-bar{
+    display:flex; align-items:center; gap:10px; margin:-2px 0 10px;
+    padding:8px 10px; border-radius:8px; background:var(--surface); border:1px solid var(--paper-line);
+  }
+  .library-select-bar .selection-count{ flex:1; font-size:13px; color:var(--muted); }
   .song-list{ border-top:1px solid var(--paper-line); }
   .song-row{
     display:grid; grid-template-columns:30px 20px 1fr; align-items:center; gap:14px;
@@ -246,8 +252,8 @@
      useful if you can actually see which key each row is in. The combined
      selector below must come after .song-row.simple to win on specificity
      for a non-editor row (which carries both classes). */
-  .song-row.library-row{ grid-template-columns:30px 20px 1fr auto; }
-  .song-row.simple.library-row{ grid-template-columns:20px 1fr auto; }
+  .song-row.library-row{ grid-template-columns:17px 30px 20px 1fr auto; }
+  .song-row.simple.library-row{ grid-template-columns:17px 20px 1fr auto; }
 
   /* ---------- editor view ---------- */
   .editor-grid{ display:grid; grid-template-columns:360px 1fr; gap:28px; align-items:start; }
@@ -2034,7 +2040,13 @@ function setYoutubeEnabled(v){
 // above, not published: each browser remembers its own sort, independent
 // of every other editor/viewer's.
 function getLibrarySort(){
-  return { by: STATE.settings.librarySortBy || 'alpha', dir: STATE.settings.librarySortDir || 'asc' };
+  let by = STATE.settings.librarySortBy || 'alpha';
+  // Migrates a device that already picked the original combined "recently
+  // added/edited" option before it was split into separate "added"/
+  // "edited" sorts -- "edited" is the closer equivalent (it's what the
+  // combined option actually sorted by).
+  if (by === 'recent') by = 'edited';
+  return { by, dir: STATE.settings.librarySortDir || 'asc' };
 }
 function setLibrarySort(by, dir){
   STATE.settings.librarySortBy = by;
@@ -2264,7 +2276,8 @@ function songHasVideo(song){
 // ascending order; ties always fall back to title so the result is stable
 // and never looks shuffled within a group.
 const LIBRARY_SORT_LABELS = {
-  recent: 'Recently added/edited',
+  added: 'Recently added',
+  edited: 'Recently edited',
   alpha: 'Title (A-Z)',
   key: 'Key',
   video: 'Has video',
@@ -2272,7 +2285,14 @@ const LIBRARY_SORT_LABELS = {
 function librarySortTitleKey(song){ return splitTitleArtist(song.title).main.toLowerCase(); }
 function compareSongsForLibrary(a, b, by){
   switch(by){
-    case 'recent': {
+    // createdAt never moves after a song is first added (see the "+" form
+    // and publishToGithub()'s songsForExport), so this is a pure "when was
+    // this first added" order, independent of any later edits.
+    case 'added': {
+      const d = (a.createdAt||0) - (b.createdAt||0);
+      return d !== 0 ? d : librarySortTitleKey(a).localeCompare(librarySortTitleKey(b));
+    }
+    case 'edited': {
       const d = (a.updatedAt||a.createdAt||0) - (b.updatedAt||b.createdAt||0);
       return d !== 0 ? d : librarySortTitleKey(a).localeCompare(librarySortTitleKey(b));
     }
@@ -2743,15 +2763,29 @@ function renderHomeView(date){
   const sortRow = document.createElement('div');
   sortRow.className = 'library-sort';
   sortRow.innerHTML = `
+    <input type="checkbox" id="librarySelectAll" class="select-all-check" title="Select all (currently shown) songs">
     <select id="librarySortBy" title="Sort the song list by">
       ${Object.entries(LIBRARY_SORT_LABELS).map(([k,label])=>`<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('')}
     </select>
     <button class="iconbtn" id="librarySortDir" type="button"></button>`;
   wrap.appendChild(sortRow);
 
+  // Shown only while something's selected -- lets someone pick a handful
+  // (or "select all" above) of songs straight from the library, independent
+  // of any setlist, and jump into the A4 print preview with just those --
+  // e.g. to proof-read a batch of new/edited charts without having to
+  // stage them into a setlist first.
+  const selectBar = document.createElement('div');
+  selectBar.className = 'library-select-bar';
+  selectBar.hidden = true;
+  wrap.appendChild(selectBar);
+
   const libraryEl = document.createElement('div');
   libraryEl.className = 'song-list';
   wrap.appendChild(libraryEl);
+
+  const selectedIds = new Set();
+  const selectAllCheckbox = sortRow.querySelector('#librarySelectAll');
 
   const btnPresentHome = slot.querySelector('#btnPresentHome');
   const btnShareSetlist = slot.querySelector('#btnShareSetlist');
@@ -2813,10 +2847,12 @@ function renderHomeView(date){
     const setlistIds = STATE.setlists[date] || [];
     const { by, dir } = getLibrarySort();
     const songs = sortSongsForLibrary(STATE.songs.filter(s=> !q || s.title.toLowerCase().includes(q)), by, dir);
+    paintSelectionBar();
     if (songs.length===0){
       const emptyMsg = STATE.songs.length ? 'No songs match your search'
         : (editor ? 'No songs yet. Tap "+" to add your first one.' : 'No songs yet.');
       libraryEl.innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
+      paintSelectAllState([]);
       return;
     }
     for (const s of songs){
@@ -2824,6 +2860,7 @@ function renderHomeView(date){
       const row = document.createElement('div');
       row.className = editor ? 'song-row library-row' : 'song-row simple library-row';
       row.innerHTML = `
+        <input type="checkbox" class="song-select" data-act="select" data-id="${escapeHtml(s.id)}" ${selectedIds.has(s.id)?'checked':''} title="Select for A4 print preview">
         ${editor ? `<button class="song-badge ${idx===-1?'':'assigned'}" data-act="toggle" title="${idx===-1?"Add to this date's setlist":"Remove from this date's setlist"}">${idx===-1?'':idx+1}</button>` : ''}
         <span class="song-video-icon" title="${songHasVideo(s)?'Has a reference video':''}">${songHasVideo(s)?'📺':''}</span>
         <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>
@@ -2831,6 +2868,12 @@ function renderHomeView(date){
       row.addEventListener('click', (e)=>{
         if (e.target.closest('[data-act]')) return;
         go({view:'song', songId:s.id, date});
+      });
+      row.querySelector('[data-act="select"]').addEventListener('click', (e)=> e.stopPropagation());
+      row.querySelector('[data-act="select"]').addEventListener('change', (e)=>{
+        if (e.target.checked) selectedIds.add(s.id); else selectedIds.delete(s.id);
+        paintSelectAllState(songs.map(s=>s.id));
+        paintSelectionBar();
       });
       if (editor){
         row.querySelector('[data-act="toggle"]').addEventListener('click', (e)=>{
@@ -2843,11 +2886,48 @@ function renderHomeView(date){
       }
       libraryEl.appendChild(row);
     }
+    paintSelectAllState(songs.map(s=>s.id));
+  }
+
+  function paintSelectAllState(visibleIds){
+    const allSelected = visibleIds.length>0 && visibleIds.every(id=>selectedIds.has(id));
+    const someSelected = visibleIds.some(id=>selectedIds.has(id));
+    selectAllCheckbox.checked = allSelected;
+    selectAllCheckbox.indeterminate = !allSelected && someSelected;
+  }
+
+  function paintSelectionBar(){
+    const n = selectedIds.size;
+    selectBar.hidden = n === 0;
+    if (n === 0){ selectBar.innerHTML = ''; return; }
+    selectBar.innerHTML = `
+      <span class="selection-count">${n} song${n===1?'':'s'} selected</span>
+      <button class="iconbtn" id="btnPrintSelected" type="button">Print preview (A4)</button>
+      <button class="iconbtn" id="btnClearSelection" type="button">Clear</button>`;
+    selectBar.querySelector('#btnPrintSelected').addEventListener('click', ()=> openPrintPreview(date, [...selectedIds]));
+    selectBar.querySelector('#btnClearSelection').addEventListener('click', ()=>{
+      selectedIds.clear();
+      paintLibrary(search.value);
+    });
   }
 
   function paintAll(){ paintSetlist(); paintLibrary(search.value); }
   paintAll();
   search.addEventListener('input', ()=> paintLibrary(search.value));
+
+  // Selects/deselects every song CURRENTLY SHOWN (i.e. after the search
+  // filter, independent of sort order) -- a song hidden by the search box
+  // stays selected or not exactly as it was, so switching searches to
+  // build up a selection across several terms doesn't lose earlier picks.
+  selectAllCheckbox.addEventListener('click', (e)=> e.stopPropagation());
+  selectAllCheckbox.addEventListener('change', ()=>{
+    const q = (search.value||'').trim().toLowerCase();
+    const visibleIds = STATE.songs.filter(s=> !q || s.title.toLowerCase().includes(q)).map(s=>s.id);
+    const allSelected = visibleIds.length>0 && visibleIds.every(id=>selectedIds.has(id));
+    if (allSelected) visibleIds.forEach(id=>selectedIds.delete(id));
+    else visibleIds.forEach(id=>selectedIds.add(id));
+    paintLibrary(search.value);
+  });
 
   // "All songs" sort order -- persisted per-browser (getLibrarySort() reads
   // from STATE.settings, which never publishes), so each editor/viewer can
@@ -3706,9 +3786,14 @@ window.addEventListener('resize', ()=>{
    ========================================================================= */
 const printPreviewEl = document.getElementById('printPreview');
 let printDate = null;
+// Set when printing an explicit selection from the library list instead of
+// a date's setlist (see the "All songs" select-all/checkbox UI in
+// renderHomeView) -- takes priority over printDate's setlist when present.
+let printSongIds = null;
 
-function openPrintPreview(date){
+function openPrintPreview(date, songIds){
   printDate = date;
+  printSongIds = songIds || null;
   printPreviewEl.classList.add('open');
   document.body.style.overflow = 'hidden';
   paintPrintPreview();
@@ -3737,10 +3822,10 @@ function paintPrintPreview(){
 
   const root = document.getElementById('printRoot');
   root.innerHTML = '';
-  const ids = STATE.setlists[printDate] || [];
+  const ids = printSongIds || STATE.setlists[printDate] || [];
   const songs = ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
   if (!songs.length){
-    root.innerHTML = `<div class="print-empty">No songs in this setlist.</div>`;
+    root.innerHTML = `<div class="print-empty">${printSongIds ? 'No songs selected.' : 'No songs in this setlist.'}</div>`;
     return;
   }
   // Chord/lyric lines are rendered white-space:pre (to keep chords aligned
