@@ -496,20 +496,23 @@
   }
   .print-toolbar-hint{ font-size:12px; color:var(--muted); flex:1; min-width:120px; }
   .print-page-wrap{ display:flex; justify-content:center; padding:28px 16px 60px; }
-  /* Sized in mm, matching @page{size:A4; margin:14mm} below exactly -- not
+  /* Sized in mm, matching @page{size:A4; margin:6mm} below exactly -- not
      just visually (so the preview looks like real paper), but so the
      on-screen content width used to compute where chord/lyric lines wrap
      (see paintPrintPreview()'s use of wrapRows()) is the *same* width
      they'll actually have on the printed page. A pixel-approximated
      preview width that didn't quite match the real @page content width
      would let a line get wrapped "safely" for the preview and still run
-     past the edge -- clipped, not wrapped -- once actually printed. */
+     past the edge -- clipped, not wrapped -- once actually printed.
+     6mm is close to the smallest margin most printers/print-to-PDF engines
+     can actually render without clipping content in their own fixed
+     non-printable border -- 0 isn't safe across real printers, this is. */
   .print-root{
     width:210mm; min-height:297mm; background:#fff; color:#111; box-shadow:0 2px 16px rgba(0,0,0,.3);
-    padding:14mm; box-sizing:border-box;
+    padding:6mm; box-sizing:border-box;
   }
   .print-song{ white-space:pre; }
-  .print-song + .print-song{ break-before:page; margin-top:0; padding-top:14mm; }
+  .print-song + .print-song{ break-before:page; margin-top:0; padding-top:6mm; }
   .print-song .row-title{ column-span:all; color:#111; font-weight:700; font-size:1.5em; margin-bottom:.1em; white-space:normal; }
   .print-song .row-desc{ column-span:all; color:#333; font-style:italic; font-weight:400; margin-bottom:.9em; white-space:pre-wrap; font-size:.8em; }
   .print-song .row-section{ color:#111; font-weight:700; margin-top:1em; break-after:avoid; }
@@ -527,7 +530,7 @@
     .print-page-wrap{ padding:0; display:block; }
     .print-root{ width:auto; min-height:0; box-shadow:none; padding:0; }
     .print-song + .print-song{ padding-top:0; }
-    @page{ size:A4; margin:14mm; }
+    @page{ size:A4; margin:6mm; }
   }
 
   /* ---------- modal ---------- */
