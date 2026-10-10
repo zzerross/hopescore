@@ -115,6 +115,51 @@ stay as-is — it's just default print layout settings). Don't touch the
 marker comments themselves; `publishToGithub()` does a literal string
 search for them.
 
+### Song body text: blank lines are canonicalized on save
+
+A song's `body` is free-form chord/lyric chart text — see `parseBody()`
+(section 2) for the actual line-by-line parsing rules (chord-line
+detection, section-header detection, the `##` custom-section-name escape
+hatch). One narrow but important rule about it: **blank lines in `body`
+are not preserved as typed.** `normalizeBodyBlankLines()` (section 2,
+right after `parseBody()`) runs on every save from the song editor (both
+adding a new song and editing an existing one — the two `body: ...`
+assignments in the save handler, section 7) and rewrites `body` to:
+
+1. Drop every blank line the editor typed, then
+2. Insert exactly one blank line between consecutive "parts" — a section
+   header (`Verse 1`, `Chorus`, an auto-detected `Intro`, a custom `##`
+   name, etc.) plus everything that follows it up to the next header, with
+   any content before the very first header treated as its own leading
+   part.
+
+This isn't just a formatting preference. `parseBody()` only renders a
+chord line stacked directly above its lyric (a "pair") when the two are
+*adjacent* raw lines with nothing between them — a stray blank line
+between what was meant to be one chord+lyric pair silently breaks that
+pairing, so the chord renders as its own disconnected line instead of
+aligned over the right syllable, with a visible gap where the blank line
+used to be (a blank row's height doesn't scale with the `lineSpacing`
+setting, so this always looks "wrong" no matter what that's set to).
+Content pasted in from other chord-chart sources commonly comes
+double-spaced like that throughout; normalizing on save fixes both the gap
+and the broken pairing at once, and is a pure line-level transform
+(chord/lyric text itself is never touched), so it's safe to re-run and
+always idempotent. It only runs at *save* time, not live while typing —
+the editor's live preview intentionally mirrors the textarea exactly as
+typed, so what you see while editing matches your actual draft, not a
+silently-rewritten version of it.
+
+This rule was also applied once, retroactively, to every song already in
+`seedSongs` — not just enforced going forward. 29 of the 37 songs at the
+time had at least one blank line in a place this rule removes; 4 of those
+had *every* chord+lyric pair in the entire song broken this way (zero
+actual chord/lyric pairs anywhere in the song, every chord line floating
+disconnected above its lyric instead of aligned over it) before the fix.
+If you're importing a chart from elsewhere, paste it as-is and let the
+editor's Save button normalize it rather than hand-cleaning the blank
+lines first.
+
 ### Publish flow
 
 An "editor" is just a device that has a GitHub personal access token and a
