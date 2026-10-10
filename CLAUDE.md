@@ -345,25 +345,53 @@ automatically just by reusing `wrapRows()`.
 
 ### Experimental: per-song auto font size in the A4 print view
 
-The print toolbar has an Auto/Wrap toggle (`getPrintFitMode()`/
-`setPrintFitMode()`). `Wrap` (the default, unchanged original behavior) uses
-one global font size for every song, same as before this existed. `Auto`
-instead searches, per song, for the largest size in `PRINT_FONT_RANGE` whose
-rendered height still fits one A4 page (`searchMaxPrintFontSize()`, via a
-`renderPrintSongAt()` render-and-measure loop against
-`measurePrintPageContentHeight()`), so a short song can render much bigger
-than a long one instead of both being squeezed to whatever size the longest
-song in the batch needs. It reuses the exact same `wrapRows()`/
-`groupRowsIntoParts()` pipeline as `Wrap`, just re-run per candidate size, so
-both read-only layout invariants above still hold at every computed size.
+The print toolbar has an Auto/Manual toggle (`getPrintFitMode()`/
+`setPrintFitMode()`). Its stored value is still `'auto'`/`'wrap'` — kept as
+`'wrap'` rather than renamed to `'manual'` for continuity with existing
+device-local `localStorage` data — but the UI label is `Manual`, not `Wrap`;
+don't confuse the stored string with the displayed name when reading this
+code.
 
-This is deliberately stored in device-local `STATE.settings.printFitMode`,
-not in the published `printPrefs` — the per-song-vs-global question isn't
-settled yet (see the queue/per-view-settings discussion this was born from),
-so it's kept as a local experiment you can try without it affecting anyone
-else's view or getting published. If/when a direction is settled, decide
-then whether this should move into `printPrefs` (team-wide) or stay
-device-local permanently.
+- **`Manual`** (the original default, unchanged behavior): one global font
+  size for every song, same as before this feature existed, adjustable with
+  A−/A+.
+- **`Auto`**: searches, per song, for the largest size in `PRINT_FONT_RANGE`
+  that satisfies *both* (a) the rendered content still fits one A4 page, and
+  (b) **no row needs to wrap at all** — not even one chord+lyric pair.
+  (`searchMaxPrintFontSize()`, via a `renderPrintSongAt()` render-and-measure
+  loop; condition (b) is checked with `anyRowNeedsWrap()`, the same
+  per-row length-vs-`maxChars` test `wrapRows()` itself branches on.) A short
+  song can render much bigger than a long one instead of both being squeezed
+  to whatever size the longest song in the batch needs.
+
+This is a deliberately **stricter** bar than the pre-existing Auto/Wrap
+toggle on the on-screen Chords/Present views (`searchFlowFit()`/`flowFit()`,
+same "Auto"/"Wrap" button labels, unrelated toggle — don't conflate the two).
+That one still wraps an outlier-too-long line as a fallback even at its
+chosen size, because scrolling past one more wrapped line on screen costs
+little. Print's Auto forbids that outright: a performance chart is read at a
+glance, not scrolled, so a line splitting mid-chord-or-phrase is exactly the
+breakage this mode exists to prevent, not an acceptable fallback — it would
+rather shrink further (down to `PRINT_FONT_RANGE`'s floor if it has to) than
+let one line wrap. Both conditions (page-fit, no-wrap) only get easier to
+satisfy as font size shrinks, so a plain top-down scan from the range's max
+finds the true largest satisfying size with no extra care needed. If even
+the smallest size in the range still can't satisfy both — a pathological
+single token wider than the whole column, see invariant 2 above — it's left
+rendered at that floor, possibly still wrapping and/or overflowing, same as
+`Manual` would at a font size too large for the content.
+
+Auto reuses the exact same `wrapRows()`/`groupRowsIntoParts()` pipeline as
+Manual, just re-run per candidate size, so both read-only layout invariants
+above still hold at every computed size regardless of mode.
+
+This whole fit-mode toggle is deliberately stored in device-local
+`STATE.settings.printFitMode`, not in the published `printPrefs` — the
+per-song-vs-global question isn't settled yet (see the queue/per-view-
+settings discussion this was born from), so it's kept as a local experiment
+you can try without it affecting anyone else's view or getting published.
+If/when a direction is settled, decide then whether this should move into
+`printPrefs` (team-wide) or stay device-local permanently.
 
 ## Making a change, end to end
 

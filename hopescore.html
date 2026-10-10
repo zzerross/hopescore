@@ -705,8 +705,8 @@
       <button data-col="2" title="2 columns">2</button>
     </div>
     <div class="seg" id="printFitSeg" title="Font size per song">
-      <button data-fit="auto" title="Shrink each song to the largest size that still fits one page">Auto</button>
-      <button data-fit="wrap" title="Same fixed font size for every song">Wrap</button>
+      <button data-fit="auto" title="Largest size per song with no wrapped lines, that still fits one page">Auto</button>
+      <button data-fit="wrap" title="Same fixed font size for every song, set manually with A−/A+">Manual</button>
     </div>
     <div class="seg" id="printFontSeg" title="Print font size">
       <button id="printFontDec" title="Smaller">A−</button>
@@ -2190,9 +2190,12 @@ function setPrintShowSections(v){
 // (see CLAUDE.md), so deliberately kept OUT of the published STATE.printPrefs
 // and in device-local STATE.settings instead: flipping it while testing
 // shouldn't change what anyone else's printouts look like. 'wrap' (the
-// long-standing default) uses printPrefs.fontSize for every song, same as
-// before this existed; 'auto' finds each song's own largest size that
-// still fits one A4 page (see searchMaxPrintFontSize() in section 8b).
+// long-standing default, labeled "Manual" in the UI -- the stored value is
+// kept as 'wrap' for continuity with existing device-local localStorage
+// data, don't confuse the two) uses printPrefs.fontSize for every song, same
+// as before this existed; 'auto' finds each song's own largest size that
+// both fits one A4 page AND needs no line to wrap (see
+// searchMaxPrintFontSize()/anyRowNeedsWrap() in section 8b).
 function getPrintFitMode(){ return STATE.settings.printFitMode === 'auto' ? 'auto' : 'wrap'; }
 function setPrintFitMode(v){
   STATE.settings.printFitMode = v === 'auto' ? 'auto' : 'wrap';
@@ -2681,6 +2684,25 @@ function wrapRows(rows, maxChars){
     }
   }
   return out;
+}
+// Reports whether wrapRows(rows, maxChars) would split ANY row into more
+// than one output line at this maxChars -- the exact same per-row condition
+// wrapRows itself branches on above, just as a cheap boolean with no
+// output array built. Used by the print view's Auto fit mode
+// (searchMaxPrintFontSize()) to require, as a candidate font size's pass
+// condition, that no line needs to wrap at all -- not just that the song's
+// total height fits one page.
+function anyRowNeedsWrap(rows, maxChars){
+  for (let i=0;i<rows.length;i++){
+    const r = rows[i];
+    if (r.cls==='row-chord' && rows[i+1] && rows[i+1].cls==='row-lyric'){
+      if (Math.max(r.text.length, rows[i+1].text.length) > maxChars) return true;
+      i++;
+      continue;
+    }
+    if (!r.href && r.cls !== 'row-blank' && (r.text||'').length > maxChars) return true;
+  }
+  return false;
 }
 function measureMonoCharWidth(fontSize, unit){
   const probe = document.createElement('span');
@@ -4061,7 +4083,10 @@ function closePrintPreview(){
 // part shared by both print fit modes, factored out so "Auto" (below) can
 // call this once per candidate size without duplicating the layout logic.
 // songEl must already be in the DOM (inside a real .print-sheet) so
-// clientWidth/scrollHeight reads below are meaningful.
+// clientWidth/scrollHeight reads below are meaningful. Returns whether any
+// row needed to wrap at this size (see anyRowNeedsWrap()) -- Manual mode's
+// caller ignores this; Auto's search uses it as a pass condition alongside
+// page-height fit.
 function renderPrintSongAt(songEl, song, fontSize, columns, lineSpacing, showChords, showSections){
   songEl.style.fontSize = fontSize+'pt';
   songEl.style.lineHeight = String(lineSpacing);
@@ -4101,6 +4126,7 @@ function renderPrintSongAt(songEl, song, fontSize, columns, lineSpacing, showCho
     for (const r of wrapRows(part, maxChars)) partEl.appendChild(rowToLineEl(r));
     songEl.appendChild(partEl);
   }
+  return anyRowNeedsWrap(bodyRows, maxChars);
 }
 // The content height available on one real A4 page (297mm minus the 6mm
 // top+bottom @page margin, in px) -- geometry only, independent of font
@@ -4118,21 +4144,28 @@ function measurePrintPageContentHeight(){
 }
 // Tries font sizes from PRINT_FONT_RANGE's max down to its min, rendering
 // `song` into the real (already-in-DOM) songEl at each one via
-// renderPrintSongAt(), and stops at the largest size whose result fits
-// within one A4 page's content height -- same idea as the on-screen Chords
-// view's own Auto-fit (searchFlowFit/flowFit), but checked against one
-// real page's height instead of flowing across columns-then-spilling, and
-// reusing THIS feature's own part-atomicity (groupRowsIntoParts) and
-// chord-safe wrapping (wrapRows) instead of Chords' blank-line chunking.
-// If nothing in the range fits, it's left rendered at the smallest size
-// (PRINT_FONT_RANGE's minimum) -- still overflowing, same as "Wrap" mode
-// would at a font size too large for the content, and the same thing
-// fitPrintSheets()'s scroll-on-overflow already handles either way.
+// renderPrintSongAt(), and stops at the largest size that satisfies BOTH:
+// (a) the whole song's rendered height still fits one A4 page, and
+// (b) no row needed to wrap at all (per renderPrintSongAt()'s own return
+// value, backed by anyRowNeedsWrap()) -- a stricter bar than the on-screen
+// Chords view's own Auto-fit (searchFlowFit/flowFit), which still wraps an
+// outlier-long line as a fallback even at its chosen size. Print's Auto
+// forbids that outright: a chord+lyric pair (or any other row) splitting
+// across a wrapped line is exactly the visual breakage "Auto" exists to
+// avoid here, not an acceptable fallback.
+// Both conditions are monotonic in font size -- shrinking the font can only
+// reduce maxChars-exceeding rows and reduce total height -- so a plain
+// top-down scan finds the true largest satisfying size with no extra care.
+// If nothing in the range satisfies both, it's left rendered at the
+// smallest size (PRINT_FONT_RANGE's minimum) -- possibly still wrapping
+// and/or overflowing, same as "Manual" mode would at a font size too large
+// for the content, and the same thing fitPrintSheets()'s scroll-on-overflow
+// already handles either way.
 function searchMaxPrintFontSize(songEl, song, columns, lineSpacing, showChords, showSections, pageContentHeight){
   const [lo, hi] = PRINT_FONT_RANGE;
   for (let fs = hi; fs >= lo; fs--){
-    renderPrintSongAt(songEl, song, fs, columns, lineSpacing, showChords, showSections);
-    if (fs === lo || songEl.scrollHeight <= pageContentHeight + 1) return fs;
+    const wrapped = renderPrintSongAt(songEl, song, fs, columns, lineSpacing, showChords, showSections);
+    if (fs === lo || (!wrapped && songEl.scrollHeight <= pageContentHeight + 1)) return fs;
   }
 }
 
@@ -4142,7 +4175,7 @@ function paintPrintPreview(){
   document.querySelectorAll('#printColSeg button').forEach(b=> b.classList.toggle('active', Number(b.dataset.col)===prefs.columns));
   document.querySelectorAll('#printFitSeg button').forEach(b=> b.classList.toggle('active', b.dataset.fit===fitMode));
   // In Auto, font size varies per song -- there's no single number to show
-  // or adjust, so the label reads "Auto" and A-/A+ switch to Wrap first
+  // or adjust, so the label reads "Auto" and A-/A+ switch to Manual first
   // (see their click handlers below) rather than doing nothing.
   document.getElementById('printFontLabel').textContent = fitMode==='auto' ? 'Auto' : prefs.fontSize+'pt';
   document.getElementById('printSpacingLabel').textContent = prefs.lineSpacing.toFixed(1)+'x';
@@ -4234,7 +4267,7 @@ document.getElementById('printFitSeg').addEventListener('click', (e)=>{
   paintPrintPreview();
 });
 // A-/A+ are only meaningful for a single shared size -- clicking either
-// one while in Auto switches to Wrap first (seeded from the current
+// one while in Auto switches to Manual first (seeded from the current
 // printPrefs.fontSize) so the nudge actually does something, same as the
 // on-screen Chords view's Auto-to-Wrap switch when its own A-/A+ are used.
 document.getElementById('printFontDec').addEventListener('click', ()=>{ setPrintFitMode('wrap'); setPrintFontSize(getPrintPrefs().fontSize - 1); paintPrintPreview(); });
