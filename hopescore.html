@@ -567,9 +567,17 @@
   .print-part{ break-inside:avoid; }
   .print-song .row-title{ column-span:all; color:#111; font-weight:700; font-size:1.5em; margin-bottom:.1em; white-space:normal; }
   .print-song .row-desc{ column-span:all; color:#333; font-style:italic; font-weight:400; margin-bottom:.9em; white-space:pre-wrap; font-size:.8em; }
-  .print-song .row-section{ color:#111; font-weight:700; margin-top:1em; break-after:avoid; }
+  /* Section names and chords get the same two accent colors as the
+     on-screen light theme's --section/--chord (hardcoded, not the CSS
+     variable, since print is always on white paper regardless of the
+     app's own light/dark theme setting) so a part label or a chord is
+     visually distinct from the lyric line at a glance -- lyrics stay
+     plain black. print-color-adjust guards against a browser downgrading
+     these to black-and-white on print/PDF output by default. */
+  .print-song{ print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+  .print-song .row-section{ color:#A6602B; font-weight:700; margin-top:1em; break-after:avoid; }
   .print-song .row-section:first-of-type{ margin-top:0; }
-  .print-song .row-chord{ color:#111; font-weight:700; break-after:avoid; }
+  .print-song .row-chord{ color:#2B5F8A; font-weight:700; break-after:avoid; }
   .print-song .row-lyric{ color:#111; font-weight:400; }
   .print-song .row-blank{ height:.8em; }
   .print-song .row-link{ white-space:normal; word-break:break-all; }
