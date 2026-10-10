@@ -496,6 +496,11 @@
   }
   .print-toolbar-hint{ font-size:12px; color:var(--muted); flex:1; min-width:120px; }
   .print-page-wrap{ display:flex; justify-content:center; padding:28px 16px 60px; }
+  /* One song = one .print-sheet = one visual A4 page, stacked with a real
+     gap between them -- not just one long scrolling box -- so the on-screen
+     preview actually shows where pages break, matching the real printed/PDF
+     output instead of only revealing pagination once you print. */
+  .print-root{ display:flex; flex-direction:column; align-items:center; gap:24px; }
   /* Sized in mm, matching @page{size:A4; margin:6mm} below exactly -- not
      just visually (so the preview looks like real paper), but so the
      on-screen content width used to compute where chord/lyric lines wrap
@@ -507,12 +512,15 @@
      6mm is close to the smallest margin most printers/print-to-PDF engines
      can actually render without clipping content in their own fixed
      non-printable border -- 0 isn't safe across real printers, this is. */
-  .print-root{
+  .print-sheet{
     width:210mm; min-height:297mm; background:#fff; color:#111; box-shadow:0 2px 16px rgba(0,0,0,.3);
-    padding:6mm; box-sizing:border-box;
+    padding:6mm; box-sizing:border-box; flex-shrink:0;
   }
+  /* One song per page by default: every sheet after the first forces a new
+     physical page when actually printed (break-before only takes effect in
+     paged/print media -- the gap above is what shows separation on screen). */
+  .print-sheet + .print-sheet{ break-before:page; }
   .print-song{ white-space:pre; }
-  .print-song + .print-song{ break-before:page; margin-top:0; padding-top:6mm; }
   .print-song .row-title{ column-span:all; color:#111; font-weight:700; font-size:1.5em; margin-bottom:.1em; white-space:normal; }
   .print-song .row-desc{ column-span:all; color:#333; font-style:italic; font-weight:400; margin-bottom:.9em; white-space:pre-wrap; font-size:.8em; }
   .print-song .row-section{ color:#111; font-weight:700; margin-top:1em; break-after:avoid; }
@@ -528,8 +536,8 @@
     #printPreview{ position:static; background:#fff; inset:auto; overflow:visible; }
     .no-print{ display:none !important; }
     .print-page-wrap{ padding:0; display:block; }
-    .print-root{ width:auto; min-height:0; box-shadow:none; padding:0; }
-    .print-song + .print-song{ padding-top:0; }
+    .print-root{ display:block; } /* the on-screen gap between sheets isn't needed once @page+break-before:page do the real pagination */
+    .print-sheet{ width:auto; min-height:0; box-shadow:none; padding:0; }
     @page{ size:A4; margin:6mm; }
   }
 
@@ -3919,13 +3927,19 @@ function paintPrintPreview(){
   // column's *real* rendered width rather than a hand-computed guess.
   const charW = measureMonoCharWidth(prefs.fontSize, 'pt');
   songs.forEach(song=>{
+    // One sheet per song -- see .print-sheet's CSS for why this is what
+    // actually makes "one page per song" visible on screen, not just in
+    // the real print/PDF output.
+    const sheetEl = document.createElement('div');
+    sheetEl.className = 'print-sheet';
     const songEl = document.createElement('div');
     songEl.className = 'print-song';
     songEl.style.fontSize = prefs.fontSize+'pt';
     songEl.style.lineHeight = String(prefs.lineSpacing);
     songEl.style.columnCount = prefs.columns;
     songEl.style.columnGap = CHART_COL_GAP+'px';
-    root.appendChild(songEl); // must be in the DOM before clientWidth means anything
+    sheetEl.appendChild(songEl);
+    root.appendChild(sheetEl); // must be in the DOM before clientWidth means anything
     const colWidth = prefs.columns===2 ? (songEl.clientWidth - CHART_COL_GAP)/2 : songEl.clientWidth;
     const maxChars = Math.max(6, Math.floor(colWidth / charW));
     const rows = filterPresentRows(computeSongRows(song, 'original', null), prefs.showChords, prefs.showSections);
