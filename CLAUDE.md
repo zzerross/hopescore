@@ -343,6 +343,28 @@ caller. Invariant 1 (`groupRowsIntoParts()` + `.print-part`'s
 wherever else starts doing paginated or columned layout — it won't happen
 automatically just by reusing `wrapRows()`.
 
+### Experimental: per-song auto font size in the A4 print view
+
+The print toolbar has an Auto/Wrap toggle (`getPrintFitMode()`/
+`setPrintFitMode()`). `Wrap` (the default, unchanged original behavior) uses
+one global font size for every song, same as before this existed. `Auto`
+instead searches, per song, for the largest size in `PRINT_FONT_RANGE` whose
+rendered height still fits one A4 page (`searchMaxPrintFontSize()`, via a
+`renderPrintSongAt()` render-and-measure loop against
+`measurePrintPageContentHeight()`), so a short song can render much bigger
+than a long one instead of both being squeezed to whatever size the longest
+song in the batch needs. It reuses the exact same `wrapRows()`/
+`groupRowsIntoParts()` pipeline as `Wrap`, just re-run per candidate size, so
+both read-only layout invariants above still hold at every computed size.
+
+This is deliberately stored in device-local `STATE.settings.printFitMode`,
+not in the published `printPrefs` — the per-song-vs-global question isn't
+settled yet (see the queue/per-view-settings discussion this was born from),
+so it's kept as a local experiment you can try without it affecting anyone
+else's view or getting published. If/when a direction is settled, decide
+then whether this should move into `printPrefs` (team-wide) or stay
+device-local permanently.
+
 ## Making a change, end to end
 
 1. Edit `hopescore.html` directly — no build step.

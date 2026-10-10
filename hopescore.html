@@ -704,6 +704,10 @@
       <button data-col="1" title="1 column">1</button>
       <button data-col="2" title="2 columns">2</button>
     </div>
+    <div class="seg" id="printFitSeg" title="Font size per song">
+      <button data-fit="auto" title="Shrink each song to the largest size that still fits one page">Auto</button>
+      <button data-fit="wrap" title="Same fixed font size for every song">Wrap</button>
+    </div>
     <div class="seg" id="printFontSeg" title="Print font size">
       <button id="printFontDec" title="Smaller">A−</button>
       <span class="font-size-label" id="printFontLabel"></span>
@@ -2180,6 +2184,18 @@ function setPrintShowChords(v){
 }
 function setPrintShowSections(v){
   STATE.printPrefs = { ...getPrintPrefs(), showSections: !!v };
+  saveState();
+}
+// Per-song auto font-size for the A4 print view -- still being evaluated
+// (see CLAUDE.md), so deliberately kept OUT of the published STATE.printPrefs
+// and in device-local STATE.settings instead: flipping it while testing
+// shouldn't change what anyone else's printouts look like. 'wrap' (the
+// long-standing default) uses printPrefs.fontSize for every song, same as
+// before this existed; 'auto' finds each song's own largest size that
+// still fits one A4 page (see searchMaxPrintFontSize() in section 8b).
+function getPrintFitMode(){ return STATE.settings.printFitMode === 'auto' ? 'auto' : 'wrap'; }
+function setPrintFitMode(v){
+  STATE.settings.printFitMode = v === 'auto' ? 'auto' : 'wrap';
   saveState();
 }
 // Whether 2+ consecutive blank lines collapse into one gap. On by default;
@@ -4041,10 +4057,94 @@ function closePrintPreview(){
   document.body.style.overflow = '';
 }
 
+// Builds one song's chart into `songEl` at a specific font size -- the
+// part shared by both print fit modes, factored out so "Auto" (below) can
+// call this once per candidate size without duplicating the layout logic.
+// songEl must already be in the DOM (inside a real .print-sheet) so
+// clientWidth/scrollHeight reads below are meaningful.
+function renderPrintSongAt(songEl, song, fontSize, columns, lineSpacing, showChords, showSections){
+  songEl.style.fontSize = fontSize+'pt';
+  songEl.style.lineHeight = String(lineSpacing);
+  songEl.style.columnCount = columns;
+  songEl.style.columnGap = CHART_COL_GAP+'px';
+  // Chord/lyric lines are rendered white-space:pre (to keep chords aligned
+  // over the right syllable), which never wraps on its own -- a line wider
+  // than the column just runs past its edge and gets clipped instead. The
+  // on-screen "Wrap" fit mode already solves exactly this with wrapRows()
+  // (breaking a chord+lyric pair together, at the same character position,
+  // so the continuation line stays aligned); reused here at the print
+  // column's *real* rendered width rather than a hand-computed guess. Width
+  // doesn't depend on fontSize (the .print-sheet's own width is fixed), so
+  // this is safe to recompute on every call even though only charW changes.
+  const charW = measureMonoCharWidth(fontSize, 'pt');
+  const colWidth = columns===2 ? (songEl.clientWidth - CHART_COL_GAP)/2 : songEl.clientWidth;
+  const maxChars = Math.max(6, Math.floor(colWidth / charW));
+  const rows = filterPresentRows(computeSongRows(song, 'original', null), showChords, showSections);
+  // Title/description render column-span:all (the full page width, not
+  // one narrow column) and wrap normally via CSS, so they're kept out of
+  // the per-column character-count wrap below -- wrapping them to the
+  // narrow column's maxChars would fragment them far more than the width
+  // they actually have room for.
+  const headRows = rows.filter(r => r.cls==='row-title' || r.cls==='row-desc');
+  const bodyRows = rows.filter(r => r.cls!=='row-title' && r.cls!=='row-desc');
+  songEl.innerHTML = '';
+  for (const r of headRows) songEl.appendChild(rowToLineEl(r));
+  // Each part (section header + its chord/lyric rows) gets wrapped in its
+  // own .print-part -- see that class's CSS -- so a verse/chorus/etc.
+  // never gets split across a column or page break. Grouped BEFORE
+  // wrapRows() (not after) so a long section-header line that itself
+  // needs wrapping can't produce extra 'row-section'-classed continuation
+  // rows that would be mistaken for the start of a new part.
+  for (const part of groupRowsIntoParts(bodyRows)){
+    const partEl = document.createElement('div');
+    partEl.className = 'print-part';
+    for (const r of wrapRows(part, maxChars)) partEl.appendChild(rowToLineEl(r));
+    songEl.appendChild(partEl);
+  }
+}
+// The content height available on one real A4 page (297mm minus the 6mm
+// top+bottom @page margin, in px) -- geometry only, independent of font
+// size or content, so it's measured once per paintPrintPreview() call via
+// a throwaway empty .print-sheet probe and reused for every song's search.
+function measurePrintPageContentHeight(){
+  const probe = document.createElement('div');
+  probe.className = 'print-sheet';
+  probe.style.position = 'absolute'; probe.style.visibility = 'hidden'; probe.style.left = '-9999px';
+  document.body.appendChild(probe);
+  const cs = getComputedStyle(probe);
+  const h = probe.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  document.body.removeChild(probe);
+  return h;
+}
+// Tries font sizes from PRINT_FONT_RANGE's max down to its min, rendering
+// `song` into the real (already-in-DOM) songEl at each one via
+// renderPrintSongAt(), and stops at the largest size whose result fits
+// within one A4 page's content height -- same idea as the on-screen Chords
+// view's own Auto-fit (searchFlowFit/flowFit), but checked against one
+// real page's height instead of flowing across columns-then-spilling, and
+// reusing THIS feature's own part-atomicity (groupRowsIntoParts) and
+// chord-safe wrapping (wrapRows) instead of Chords' blank-line chunking.
+// If nothing in the range fits, it's left rendered at the smallest size
+// (PRINT_FONT_RANGE's minimum) -- still overflowing, same as "Wrap" mode
+// would at a font size too large for the content, and the same thing
+// fitPrintSheets()'s scroll-on-overflow already handles either way.
+function searchMaxPrintFontSize(songEl, song, columns, lineSpacing, showChords, showSections, pageContentHeight){
+  const [lo, hi] = PRINT_FONT_RANGE;
+  for (let fs = hi; fs >= lo; fs--){
+    renderPrintSongAt(songEl, song, fs, columns, lineSpacing, showChords, showSections);
+    if (fs === lo || songEl.scrollHeight <= pageContentHeight + 1) return fs;
+  }
+}
+
 function paintPrintPreview(){
   const prefs = getPrintPrefs();
+  const fitMode = getPrintFitMode();
   document.querySelectorAll('#printColSeg button').forEach(b=> b.classList.toggle('active', Number(b.dataset.col)===prefs.columns));
-  document.getElementById('printFontLabel').textContent = prefs.fontSize+'pt';
+  document.querySelectorAll('#printFitSeg button').forEach(b=> b.classList.toggle('active', b.dataset.fit===fitMode));
+  // In Auto, font size varies per song -- there's no single number to show
+  // or adjust, so the label reads "Auto" and A-/A+ switch to Wrap first
+  // (see their click handlers below) rather than doing nothing.
+  document.getElementById('printFontLabel').textContent = fitMode==='auto' ? 'Auto' : prefs.fontSize+'pt';
   document.getElementById('printSpacingLabel').textContent = prefs.lineSpacing.toFixed(1)+'x';
   document.getElementById('printChordsToggle').classList.toggle('primary', prefs.showChords);
   document.getElementById('printSectionsToggle').classList.toggle('primary', prefs.showSections);
@@ -4066,14 +4166,7 @@ function paintPrintPreview(){
     root.innerHTML = `<div class="print-empty">${printSongIds ? 'No songs selected.' : 'No songs in this setlist.'}</div>`;
     return;
   }
-  // Chord/lyric lines are rendered white-space:pre (to keep chords aligned
-  // over the right syllable), which never wraps on its own -- a line wider
-  // than the column just runs past its edge and gets clipped instead. The
-  // on-screen "Wrap" fit mode already solves exactly this with wrapRows()
-  // (breaking a chord+lyric pair together, at the same character position,
-  // so the continuation line stays aligned); reused here at the print
-  // column's *real* rendered width rather than a hand-computed guess.
-  const charW = measureMonoCharWidth(prefs.fontSize, 'pt');
+  const pageContentHeight = fitMode==='auto' ? measurePrintPageContentHeight() : null;
   songs.forEach(song=>{
     // One sheet per song -- see .print-sheet's CSS for why this is what
     // actually makes "one page per song" visible on screen, not just in
@@ -4086,36 +4179,13 @@ function paintPrintPreview(){
     sheetEl.className = 'print-sheet';
     const songEl = document.createElement('div');
     songEl.className = 'print-song';
-    songEl.style.fontSize = prefs.fontSize+'pt';
-    songEl.style.lineHeight = String(prefs.lineSpacing);
-    songEl.style.columnCount = prefs.columns;
-    songEl.style.columnGap = CHART_COL_GAP+'px';
     sheetEl.appendChild(songEl);
     fitEl.appendChild(sheetEl);
     root.appendChild(fitEl); // must be in the DOM before clientWidth means anything
-    const colWidth = prefs.columns===2 ? (songEl.clientWidth - CHART_COL_GAP)/2 : songEl.clientWidth;
-    const maxChars = Math.max(6, Math.floor(colWidth / charW));
-    const rows = filterPresentRows(computeSongRows(song, 'original', null), prefs.showChords, prefs.showSections);
-    // Title/description render column-span:all (the full page width, not
-    // one narrow column) and wrap normally via CSS, so they're kept out of
-    // the per-column character-count wrap below -- wrapping them to the
-    // narrow column's maxChars would fragment them far more than the width
-    // they actually have room for.
-    const headRows = rows.filter(r => r.cls==='row-title' || r.cls==='row-desc');
-    const bodyRows = rows.filter(r => r.cls!=='row-title' && r.cls!=='row-desc');
-    songEl.innerHTML = '';
-    for (const r of headRows) songEl.appendChild(rowToLineEl(r));
-    // Each part (section header + its chord/lyric rows) gets wrapped in its
-    // own .print-part -- see that class's CSS -- so a verse/chorus/etc.
-    // never gets split across a column or page break. Grouped BEFORE
-    // wrapRows() (not after) so a long section-header line that itself
-    // needs wrapping can't produce extra 'row-section'-classed continuation
-    // rows that would be mistaken for the start of a new part.
-    for (const part of groupRowsIntoParts(bodyRows)){
-      const partEl = document.createElement('div');
-      partEl.className = 'print-part';
-      for (const r of wrapRows(part, maxChars)) partEl.appendChild(rowToLineEl(r));
-      songEl.appendChild(partEl);
+    if (fitMode === 'auto'){
+      searchMaxPrintFontSize(songEl, song, prefs.columns, prefs.lineSpacing, prefs.showChords, prefs.showSections, pageContentHeight);
+    } else {
+      renderPrintSongAt(songEl, song, prefs.fontSize, prefs.columns, prefs.lineSpacing, prefs.showChords, prefs.showSections);
     }
   });
   fitPrintSheets();
@@ -4158,8 +4228,17 @@ document.getElementById('printColSeg').addEventListener('click', (e)=>{
   setPrintColumns(Number(btn.dataset.col));
   paintPrintPreview();
 });
-document.getElementById('printFontDec').addEventListener('click', ()=>{ setPrintFontSize(getPrintPrefs().fontSize - 1); paintPrintPreview(); });
-document.getElementById('printFontInc').addEventListener('click', ()=>{ setPrintFontSize(getPrintPrefs().fontSize + 1); paintPrintPreview(); });
+document.getElementById('printFitSeg').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button[data-fit]'); if (!btn) return;
+  setPrintFitMode(btn.dataset.fit);
+  paintPrintPreview();
+});
+// A-/A+ are only meaningful for a single shared size -- clicking either
+// one while in Auto switches to Wrap first (seeded from the current
+// printPrefs.fontSize) so the nudge actually does something, same as the
+// on-screen Chords view's Auto-to-Wrap switch when its own A-/A+ are used.
+document.getElementById('printFontDec').addEventListener('click', ()=>{ setPrintFitMode('wrap'); setPrintFontSize(getPrintPrefs().fontSize - 1); paintPrintPreview(); });
+document.getElementById('printFontInc').addEventListener('click', ()=>{ setPrintFitMode('wrap'); setPrintFontSize(getPrintPrefs().fontSize + 1); paintPrintPreview(); });
 document.getElementById('printSpacingDec').addEventListener('click', ()=>{ setPrintLineSpacing(getPrintPrefs().lineSpacing - 0.1); paintPrintPreview(); });
 document.getElementById('printSpacingInc').addEventListener('click', ()=>{ setPrintLineSpacing(getPrintPrefs().lineSpacing + 0.1); paintPrintPreview(); });
 document.getElementById('printChordsToggle').addEventListener('click', ()=>{ setPrintShowChords(!getPrintPrefs().showChords); paintPrintPreview(); });
@@ -4450,7 +4529,17 @@ async function publishToGithub(){
    ========================================================================= */
 (async function init(){
   if (document.fonts && document.fonts.ready){
-    document.fonts.ready.then(()=>{ if (route.view==='song') renderSongView(route.songId); if (presentEl.classList.contains('open')) paintPresent(); });
+    document.fonts.ready.then(()=>{
+      if (route.view==='song') renderSongView(route.songId);
+      if (presentEl.classList.contains('open')) paintPresent();
+      // Print's character-width measurement (measureMonoCharWidth(), used
+      // for both wrap-width and the Auto fit mode's page-fit search) reads
+      // real glyph metrics -- if the mono font was still loading when it
+      // first measured, those numbers used a fallback font's metrics
+      // instead, which can silently produce the wrong wrap points and, for
+      // Auto, the wrong per-song font size once the real font swaps in.
+      if (printPreviewEl.classList.contains('open')) paintPrintPreview();
+    });
   }
   render();
   // Offline support: only meaningful (and only registrable) when actually
