@@ -299,6 +299,11 @@
   .toolbar select{ padding:7px 10px; border-radius:8px; border:1px solid var(--paper-line); background:var(--paper); color:var(--ink); font-size:13px; }
   .seg{ display:flex; border:1px solid var(--paper-line); border-radius:8px; overflow:hidden; }
   .seg button{ border:none; background:var(--paper); color:var(--ink); padding:7px 12px; font-size:13px; cursor:pointer; }
+  /* Used by the print view's column toggle while Auto mode is active --
+     Auto decides columns (and page count) per song on its own, so the
+     control has nothing to do; disabled rather than left clickable with no
+     effect. */
+  .seg.disabled{ opacity:.4; pointer-events:none; }
   .seg button.active{ background:var(--accent); color:var(--surface); font-weight:700; }
   .font-size-label{
     display:flex; align-items:center; padding:0 8px; font-size:13px; color:var(--ink);
@@ -557,6 +562,14 @@
      via a real page.pdf() page count, not just assumed. */
   .print-sheet{ break-before:page; }
   .print-song{ white-space:pre; }
+  /* Used only by Auto mode (renderAutoPrintSheets()): the column split is
+     already decided -- by real measurement, during searchAutoPrintLayout()
+     -- so columns are placed as plain fixed-width flex children instead of
+     via CSS column-count, which would just try to re-balance content this
+     code already placed deliberately. Manual mode doesn't use these; it
+     still uses native column-count via renderPrintSongAt(). */
+  .print-cols{ display:flex; white-space:pre; }
+  .print-col{ white-space:pre; min-width:0; }
   /* One "part" (a section header plus all its chord/lyric rows, as grouped
      by groupRowsIntoParts()) must never be torn across a column or page
      break -- break-inside:avoid makes the whole group atomic: if it doesn't
@@ -4087,14 +4100,13 @@ function closePrintPreview(){
   document.body.style.overflow = '';
 }
 
-// Builds one song's chart into `songEl` at a specific font size -- the
-// part shared by both print fit modes, factored out so "Auto" (below) can
-// call this once per candidate size without duplicating the layout logic.
-// songEl must already be in the DOM (inside a real .print-sheet) so
-// clientWidth/scrollHeight reads below are meaningful. Returns whether any
-// row needed to wrap at this size (see anyRowNeedsWrap()) -- Manual mode's
-// caller ignores this; Auto's search uses it as a pass condition alongside
-// page-height fit.
+// Builds one song's chart into `songEl` at a specific font size -- used by
+// Manual mode only: one global, user-chosen font size and column count,
+// relying on the browser's own CSS column-count balancing (no page-fit
+// search, no no-wrap requirement -- wrapping via wrapRows() is exactly what
+// lets a fixed size still render something on the one sheet Manual always
+// uses). songEl must already be in the DOM (inside a real .print-sheet) so
+// the clientWidth read below is meaningful.
 function renderPrintSongAt(songEl, song, fontSize, columns, lineSpacing, showChords, showSections){
   songEl.style.fontSize = fontSize+'pt';
   songEl.style.lineHeight = String(lineSpacing);
@@ -4102,13 +4114,11 @@ function renderPrintSongAt(songEl, song, fontSize, columns, lineSpacing, showCho
   songEl.style.columnGap = CHART_COL_GAP+'px';
   // Chord/lyric lines are rendered white-space:pre (to keep chords aligned
   // over the right syllable), which never wraps on its own -- a line wider
-  // than the column just runs past its edge and gets clipped instead. The
-  // on-screen "Wrap" fit mode already solves exactly this with wrapRows()
-  // (breaking a chord+lyric pair together, at the same character position,
-  // so the continuation line stays aligned); reused here at the print
-  // column's *real* rendered width rather than a hand-computed guess. Width
-  // doesn't depend on fontSize (the .print-sheet's own width is fixed), so
-  // this is safe to recompute on every call even though only charW changes.
+  // than the column just runs past its edge and gets clipped instead.
+  // wrapRows() solves exactly this at the print column's *real* rendered
+  // width rather than a hand-computed guess. Width doesn't depend on
+  // fontSize (the .print-sheet's own width is fixed), so this is safe to
+  // recompute on every call even though only charW changes.
   const charW = measureMonoCharWidth(fontSize, 'pt');
   const colWidth = columns===2 ? (songEl.clientWidth - CHART_COL_GAP)/2 : songEl.clientWidth;
   const maxChars = Math.max(6, Math.floor(colWidth / charW));
@@ -4134,7 +4144,6 @@ function renderPrintSongAt(songEl, song, fontSize, columns, lineSpacing, showCho
     for (const r of wrapRows(part, maxChars)) partEl.appendChild(rowToLineEl(r));
     songEl.appendChild(partEl);
   }
-  return anyRowNeedsWrap(bodyRows, maxChars);
 }
 // The content height available on one real A4 page (297mm minus the 6mm
 // top+bottom @page margin, in px) -- geometry only, independent of font
@@ -4150,37 +4159,247 @@ function measurePrintPageContentHeight(){
   document.body.removeChild(probe);
   return h;
 }
-// Tries font sizes from PRINT_FONT_RANGE's max down to its min, rendering
-// `song` into the real (already-in-DOM) songEl at each one via
-// renderPrintSongAt(), and stops at the largest size that satisfies BOTH:
-// (a) the whole song's rendered height still fits one A4 page, and
-// (b) no row needed to wrap at all (per renderPrintSongAt()'s own return
-// value, backed by anyRowNeedsWrap()) -- a stricter bar than the on-screen
-// Chords view's own Auto-fit (searchFlowFit/flowFit), which still wraps an
-// outlier-long line as a fallback even at its chosen size. Print's Auto
-// forbids that outright: a chord+lyric pair (or any other row) splitting
-// across a wrapped line is exactly the visual breakage "Auto" exists to
-// avoid here, not an acceptable fallback.
-// Both conditions are monotonic in font size -- shrinking the font can only
-// reduce maxChars-exceeding rows and reduce total height -- so a plain
-// top-down scan finds the true largest satisfying size with no extra care.
-// If nothing in the range satisfies both, it's left rendered at the
-// smallest size (PRINT_FONT_RANGE's minimum) -- possibly still wrapping
-// and/or overflowing, same as "Manual" mode would at a font size too large
-// for the content, and the same thing fitPrintSheets()'s scroll-on-overflow
-// already handles either way.
-function searchMaxPrintFontSize(songEl, song, columns, lineSpacing, showChords, showSections, pageContentHeight){
-  const [lo, hi] = PRINT_FONT_RANGE;
-  for (let fs = hi; fs >= lo; fs--){
-    const wrapped = renderPrintSongAt(songEl, song, fs, columns, lineSpacing, showChords, showSections);
-    if (fs === lo || (!wrapped && songEl.scrollHeight <= pageContentHeight + 1)) return fs;
+// The real rendered width of .print-song's content box -- the same for
+// every song, font size, or column count (only the column count further
+// splits *this* width; it never changes it). Measured once per
+// paintPrintPreview() call via a throwaway probe, same technique as
+// measurePrintPageContentHeight() just above.
+function measurePrintSongWidth(){
+  const probe = document.createElement('div');
+  probe.className = 'print-sheet';
+  probe.style.position = 'absolute'; probe.style.visibility = 'hidden'; probe.style.left = '-9999px';
+  const inner = document.createElement('div');
+  inner.className = 'print-song';
+  probe.appendChild(inner);
+  document.body.appendChild(probe);
+  const w = inner.clientWidth;
+  document.body.removeChild(probe);
+  return w;
+}
+
+/* ---- Auto mode's layout engine -- per song, finds the smallest column/
+   page combination (1 column/1 page, 2 columns/1 page, 1 column/2 pages,
+   2 columns/2 pages, in that order -- see PRINT_AUTO_LADDER) that fits the
+   whole song with NO line ever wrapping, then the largest font size within
+   that combination that still satisfies both. Mirrors the on-screen Chords
+   view's own manual column-filling (chunkRows/countFittingChunks/flowFit)
+   rather than Manual mode's native CSS column-count: Manual can lean on the
+   browser's own column balancing because it only ever targets one sheet,
+   but deciding what spills onto a SECOND physical page requires knowing
+   exactly where content gets cut, which column-count balancing doesn't
+   expose. ---- */
+
+// Binary-searches how many *leading* parts fit in one column of colWidth x
+// pageContentHeight, using `probe` (an offscreen .print-song) for real
+// measurement. More parts can only add height, so this is monotonic --
+// same idea as Chords' countFittingChunks(), just grouped by this view's
+// own section-header parts (groupRowsIntoParts(), the more precise
+// definition of "part" per CLAUDE.md) instead of blank-line chunks, and
+// measured against a real A4 page's content height.
+function countFittingPrintParts(probe, parts, colWidth, pageContentHeight, fontSize, lineSpacing){
+  let lo = 0, hi = parts.length, best = 0;
+  while (lo <= hi){
+    const mid = (lo+hi) >> 1;
+    probe.style.width = colWidth+'px';
+    probe.style.fontSize = fontSize+'pt';
+    probe.style.lineHeight = String(lineSpacing);
+    probe.innerHTML = '';
+    for (const part of parts.slice(0, mid)){
+      const partEl = document.createElement('div');
+      partEl.className = 'print-part';
+      for (const r of part) partEl.appendChild(rowToLineEl(r));
+      probe.appendChild(partEl);
+    }
+    const fits = probe.scrollHeight <= pageContentHeight + 1;
+    if (fits){ best = mid; lo = mid+1; } else { hi = mid-1; }
   }
+  return best;
+}
+// Flows `parts` into up to `columns` columns of ONE page, newspaper-style
+// (fills column 1 to pageContentHeight, spills the rest into column 2) --
+// same idea as Chords' flowFit(), just measured against one real A4 page's
+// content height instead of the on-screen chart box. Returns {colBlocks,
+// overflow} -- overflow is whatever doesn't fit even in the last column, to
+// spill onto the next physical page.
+function flowPrintPage(parts, columns, colWidth, pageContentHeight, fontSize, lineSpacing){
+  const probe = document.createElement('div');
+  probe.className = 'print-song';
+  probe.style.cssText = 'position:absolute; visibility:hidden; left:-9999px; top:0;';
+  document.body.appendChild(probe);
+  let remaining = parts;
+  const colBlocks = [];
+  for (let c=0; c<columns && remaining.length>0; c++){
+    let n = countFittingPrintParts(probe, remaining, colWidth, pageContentHeight, fontSize, lineSpacing);
+    if (n === 0) n = 1; // guarantee progress even if one part alone overflows a column
+    colBlocks.push(remaining.slice(0, n));
+    remaining = remaining.slice(n);
+  }
+  document.body.removeChild(probe);
+  return { colBlocks, overflow: remaining };
+}
+// The height the title/description rows take up at a given font size --
+// they render column-span-equivalent (full page width, above the columns),
+// not inside them, so a page-1 budget check needs to reserve this much
+// height for them first, same as renderAutoPrintSheets() actually does by
+// appending them to songEl before .print-cols. Scales with fontSize (title
+// is 1.5em of it), so this can't be measured once and reused across sizes
+// the way pageContentHeight/songWidth can.
+function measurePrintHeadRowsHeight(headRows, songWidth, fontSize, lineSpacing){
+  if (!headRows.length) return 0;
+  const probe = document.createElement('div');
+  probe.className = 'print-song';
+  probe.style.cssText = 'position:absolute; visibility:hidden; left:-9999px; top:0;';
+  probe.style.width = songWidth+'px';
+  probe.style.fontSize = fontSize+'pt';
+  probe.style.lineHeight = String(lineSpacing);
+  document.body.appendChild(probe);
+  for (const r of headRows) probe.appendChild(rowToLineEl(r));
+  const h = probe.scrollHeight;
+  document.body.removeChild(probe);
+  return h;
+}
+// [pages, columns] tried in order, smallest layout first: a song only grows
+// past its default 1-column/1-page layout when it has to, column count is
+// tried before page count, and going to 2 pages restarts the column search
+// from 1 rather than carrying over whatever the 1-page attempt last tried.
+const PRINT_AUTO_LADDER = [[1,1],[1,2],[2,1],[2,2]];
+// Finds the song's Auto layout: the first (smallest) ladder entry, and
+// within it the largest font size, for which every row avoids wrapping
+// (anyRowNeedsWrap()) AND the whole song fits within that entry's page
+// budget (flowPrintPage(), run once per page, feeding each page's overflow
+// into the next). If nothing in the whole ladder satisfies both even at
+// PRINT_FONT_RANGE's floor, falls back to the ladder's largest entry
+// (2 pages/2 columns) at the floor size anyway, with wrapping allowed and
+// any still-leftover content appended to the last page's last column --
+// same "last resort" shape as flowFit()'s own fallback, left to
+// fitPrintSheets()'s per-sheet scroll-on-overflow.
+function searchAutoPrintLayout(song, songWidth, pageContentHeight, lineSpacing, showChords, showSections){
+  const [lo, hi] = PRINT_FONT_RANGE;
+  const rows = filterPresentRows(computeSongRows(song, 'original', null), showChords, showSections);
+  const headRows = rows.filter(r => r.cls==='row-title' || r.cls==='row-desc');
+  const bodyRows = rows.filter(r => r.cls!=='row-title' && r.cls!=='row-desc');
+  // headRowsHeight only depends on fontSize (and the song's own title/
+  // description), not on columns/pages, but the ladder below re-tries the
+  // same font sizes across every ladder entry -- cached per size so it's
+  // measured once each rather than up to 4x redundantly.
+  const headRowsHeightCache = {};
+  function headRowsHeightAt(fs){
+    if (!(fs in headRowsHeightCache)) headRowsHeightCache[fs] = measurePrintHeadRowsHeight(headRows, songWidth, fs, lineSpacing);
+    return headRowsHeightCache[fs];
+  }
+  // Page 1 carries the title/description above its columns (see
+  // renderAutoPrintSheets()); every later page is columns only. Budgeting
+  // per page this way is what actually matters here, not just computing a
+  // number -- without reserving page 1's head-row height, that page's
+  // columns could be measured as "fitting" against the FULL page height,
+  // then silently push past it once the real title/description height is
+  // added back on render, overflowing onto an extra physical page in real
+  // print while the on-screen .print-sheet-fit's scroll masked it entirely
+  // (this shipped once already, caught via a real PDF page count mismatch
+  // during testing, not just assumed fixed by inspection).
+  function pageBudget(pageIndex, fs){
+    return pageIndex === 0 ? pageContentHeight - headRowsHeightAt(fs) : pageContentHeight;
+  }
+
+  // Only reached once every ladder entry has failed at every font size down
+  // to the floor -- so wrapping is unavoidable here, same as Manual mode at
+  // too large a font for its content. wrapRows() is used instead of the
+  // ladder's plain parts, and page/column filling is forced to make
+  // progress (flowPrintPage's own n===0->1 fallback) rather than require a
+  // clean fit.
+  function fallbackLayout(){
+    const [maxPages, columns] = PRINT_AUTO_LADDER[PRINT_AUTO_LADDER.length - 1];
+    const fontSize = lo;
+    const charW = measureMonoCharWidth(fontSize, 'pt');
+    const colWidth = columns===2 ? (songWidth - CHART_COL_GAP)/2 : songWidth;
+    const maxChars = Math.max(6, Math.floor(colWidth / charW));
+    let remaining = groupRowsIntoParts(bodyRows).map(part => wrapRows(part, maxChars));
+    const pages = [];
+    for (let p=0; p<maxPages && remaining.length>0; p++){
+      const { colBlocks, overflow } = flowPrintPage(remaining, columns, colWidth, pageBudget(p, fontSize), fontSize, lineSpacing);
+      pages.push(colBlocks);
+      remaining = overflow;
+    }
+    if (remaining.length>0){
+      if (!pages.length) pages.push([]);
+      const lastPage = pages[pages.length-1];
+      if (!lastPage.length) lastPage.push([]);
+      lastPage[lastPage.length-1].push(...remaining);
+    }
+    return { fontSize, columns, colWidth, lineSpacing, pages, headRows };
+  }
+
+  for (const [maxPages, columns] of PRINT_AUTO_LADDER){
+    const colWidth = columns===2 ? (songWidth - CHART_COL_GAP)/2 : songWidth;
+    for (let fs = hi; fs >= lo; fs--){
+      const charW = measureMonoCharWidth(fs, 'pt');
+      const maxChars = Math.max(6, Math.floor(colWidth / charW));
+      if (anyRowNeedsWrap(bodyRows, maxChars)) continue; // cheap check first -- skip the DOM-measuring fit check below when this size already fails
+      let remaining = groupRowsIntoParts(bodyRows); // no wrapRows() needed -- anyRowNeedsWrap() already confirmed every row fits within maxChars as-is
+      const pages = [];
+      for (let p=0; p<maxPages && remaining.length>0; p++){
+        const { colBlocks, overflow } = flowPrintPage(remaining, columns, colWidth, pageBudget(p, fs), fs, lineSpacing);
+        pages.push(colBlocks);
+        remaining = overflow;
+      }
+      if (remaining.length===0) return { fontSize: fs, columns, colWidth, lineSpacing, pages, headRows };
+    }
+  }
+  return fallbackLayout();
+}
+// Renders one song's Auto-mode layout (from searchAutoPrintLayout()) as one
+// .print-sheet-fit/.print-sheet pair per page, appended to `root` -- unlike
+// Manual mode's single sheet via renderPrintSongAt(), a song can now need
+// more than one physical page, each shown as its own A4-shaped box so the
+// on-screen preview keeps matching the real print/PDF pagination (see
+// .print-sheet's own CSS comment on why that matters). Columns are placed
+// manually (one .print-col per already-decided column block) rather than
+// via CSS column-count, since the column split was already decided -- by
+// measurement -- during the search above, not something to re-balance here.
+// headRows (title/description) render only on the first page.
+function renderAutoPrintSheets(root, layout){
+  layout.pages.forEach((colBlocks, pageIndex)=>{
+    const fitEl = document.createElement('div');
+    fitEl.className = 'print-sheet-fit';
+    const sheetEl = document.createElement('div');
+    sheetEl.className = 'print-sheet';
+    const songEl = document.createElement('div');
+    songEl.className = 'print-song';
+    songEl.style.fontSize = layout.fontSize+'pt';
+    songEl.style.lineHeight = String(layout.lineSpacing);
+    sheetEl.appendChild(songEl);
+    fitEl.appendChild(sheetEl);
+    root.appendChild(fitEl);
+    if (pageIndex === 0){
+      for (const r of layout.headRows) songEl.appendChild(rowToLineEl(r));
+    }
+    const colsEl = document.createElement('div');
+    colsEl.className = 'print-cols';
+    colsEl.style.gap = CHART_COL_GAP+'px';
+    colBlocks.forEach(parts=>{
+      const colEl = document.createElement('div');
+      colEl.className = 'print-col';
+      colEl.style.width = layout.colWidth+'px';
+      for (const part of parts){
+        const partEl = document.createElement('div');
+        partEl.className = 'print-part';
+        for (const r of part) partEl.appendChild(rowToLineEl(r));
+        colEl.appendChild(partEl);
+      }
+      colsEl.appendChild(colEl);
+    });
+    songEl.appendChild(colsEl);
+  });
 }
 
 function paintPrintPreview(){
   const prefs = getPrintPrefs();
   const fitMode = getPrintFitMode();
   document.querySelectorAll('#printColSeg button').forEach(b=> b.classList.toggle('active', Number(b.dataset.col)===prefs.columns));
+  // Auto decides columns (and page count) per song on its own -- see
+  // searchAutoPrintLayout() -- so the manual 1/2-column toggle has nothing
+  // to apply to; disable it instead of leaving a control that does nothing.
+  document.getElementById('printColSeg').classList.toggle('disabled', fitMode==='auto');
   document.querySelectorAll('#printFitSeg button').forEach(b=> b.classList.toggle('active', b.dataset.fit===fitMode));
   // In Auto, font size varies per song -- there's no single number to show
   // or adjust, so the label reads "Auto" and A-/A+ switch to Manual first
@@ -4207,28 +4426,32 @@ function paintPrintPreview(){
     root.innerHTML = `<div class="print-empty">${printSongIds ? 'No songs selected.' : 'No songs in this setlist.'}</div>`;
     return;
   }
-  const pageContentHeight = fitMode==='auto' ? measurePrintPageContentHeight() : null;
-  songs.forEach(song=>{
-    // One sheet per song -- see .print-sheet's CSS for why this is what
-    // actually makes "one page per song" visible on screen, not just in
-    // the real print/PDF output. Wrapped in .print-sheet-fit (see its CSS)
-    // so it's actually usable on a phone -- fitPrintSheets() below scales
-    // it to the wrap's real width once all songs are built.
-    const fitEl = document.createElement('div');
-    fitEl.className = 'print-sheet-fit';
-    const sheetEl = document.createElement('div');
-    sheetEl.className = 'print-sheet';
-    const songEl = document.createElement('div');
-    songEl.className = 'print-song';
-    sheetEl.appendChild(songEl);
-    fitEl.appendChild(sheetEl);
-    root.appendChild(fitEl); // must be in the DOM before clientWidth means anything
-    if (fitMode === 'auto'){
-      searchMaxPrintFontSize(songEl, song, prefs.columns, prefs.lineSpacing, prefs.showChords, prefs.showSections, pageContentHeight);
-    } else {
+  // Each sheet (one per page -- a song may need more than one, see
+  // searchAutoPrintLayout()/renderAutoPrintSheets() for Auto) is wrapped in
+  // .print-sheet-fit (see its CSS) so it's actually usable on a phone --
+  // fitPrintSheets() below scales each one to the wrap's real rendered
+  // width once all of them are built.
+  if (fitMode === 'auto'){
+    const pageContentHeight = measurePrintPageContentHeight();
+    const songWidth = measurePrintSongWidth();
+    songs.forEach(song=>{
+      const layout = searchAutoPrintLayout(song, songWidth, pageContentHeight, prefs.lineSpacing, prefs.showChords, prefs.showSections);
+      renderAutoPrintSheets(root, layout);
+    });
+  } else {
+    songs.forEach(song=>{
+      const fitEl = document.createElement('div');
+      fitEl.className = 'print-sheet-fit';
+      const sheetEl = document.createElement('div');
+      sheetEl.className = 'print-sheet';
+      const songEl = document.createElement('div');
+      songEl.className = 'print-song';
+      sheetEl.appendChild(songEl);
+      fitEl.appendChild(sheetEl);
+      root.appendChild(fitEl); // must be in the DOM before clientWidth means anything
       renderPrintSongAt(songEl, song, prefs.fontSize, prefs.columns, prefs.lineSpacing, prefs.showChords, prefs.showSections);
-    }
-  });
+    });
+  }
   fitPrintSheets();
 }
 // Scales each .print-sheet down (or up, capped at its true A4 size by

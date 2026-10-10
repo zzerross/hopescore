@@ -353,37 +353,79 @@ don't confuse the stored string with the displayed name when reading this
 code.
 
 - **`Manual`** (the original default, unchanged behavior): one global font
-  size for every song, same as before this feature existed, adjustable with
-  A−/A+.
-- **`Auto`**: searches, per song, for the largest size in `PRINT_FONT_RANGE`
-  that satisfies *both* (a) the rendered content still fits one A4 page, and
-  (b) **no row needs to wrap at all** — not even one chord+lyric pair.
-  (`searchMaxPrintFontSize()`, via a `renderPrintSongAt()` render-and-measure
-  loop; condition (b) is checked with `anyRowNeedsWrap()`, the same
-  per-row length-vs-`maxChars` test `wrapRows()` itself branches on.) A short
-  song can render much bigger than a long one instead of both being squeezed
-  to whatever size the longest song in the batch needs.
+  size and column count for every song in the batch, same as before this
+  feature existed, adjustable with A−/A+ and the 1/2-column toggle.
+  `renderPrintSongAt()` — relies on native CSS `column-count` to balance
+  content across columns, since it only ever targets one sheet.
+- **`Auto`**: decides, independently **per song**, the smallest column/page
+  layout and the largest font size within it that together satisfy *both*
+  (a) the whole song fits, and (b) **no row needs to wrap at all** — not
+  even one chord+lyric pair. Because Auto now decides columns itself, the
+  1/2-column toggle has nothing to apply to in this mode and is visibly
+  disabled (`.seg.disabled`, toggled in `paintPrintPreview()`) rather than
+  left clickable with no effect.
 
-This is a deliberately **stricter** bar than the pre-existing Auto/Wrap
-toggle on the on-screen Chords/Present views (`searchFlowFit()`/`flowFit()`,
-same "Auto"/"Wrap" button labels, unrelated toggle — don't conflate the two).
-That one still wraps an outlier-too-long line as a fallback even at its
-chosen size, because scrolling past one more wrapped line on screen costs
-little. Print's Auto forbids that outright: a performance chart is read at a
-glance, not scrolled, so a line splitting mid-chord-or-phrase is exactly the
-breakage this mode exists to prevent, not an acceptable fallback — it would
-rather shrink further (down to `PRINT_FONT_RANGE`'s floor if it has to) than
-let one line wrap. Both conditions (page-fit, no-wrap) only get easier to
-satisfy as font size shrinks, so a plain top-down scan from the range's max
-finds the true largest satisfying size with no extra care needed. If even
-the smallest size in the range still can't satisfy both — a pathological
-single token wider than the whole column, see invariant 2 above — it's left
-rendered at that floor, possibly still wrapping and/or overflowing, same as
-`Manual` would at a font size too large for the content.
+#### Auto's column/page ladder
 
-Auto reuses the exact same `wrapRows()`/`groupRowsIntoParts()` pipeline as
-Manual, just re-run per candidate size, so both read-only layout invariants
-above still hold at every computed size regardless of mode.
+A song doesn't just get *a* font size in Auto — it may also grow past the
+default one-column/one-page layout if it has to. `searchAutoPrintLayout()`
+tries, in order (`PRINT_AUTO_LADDER`): **1 column/1 page → 2 columns/1 page
+→ 1 column/2 pages → 2 columns/2 pages**. Column count is tried before page
+count, and moving to 2 pages restarts the column search from 1 rather than
+carrying over whatever the 1-page attempt last tried — a song only grows
+columns, then pages, as far as it actually needs to. Within each ladder
+entry, font size is searched same as before (`PRINT_FONT_RANGE`, largest
+down to smallest, first one satisfying both conditions wins) using
+condition (b) via `anyRowNeedsWrap()`, same per-row length-vs-`maxChars`
+test `wrapRows()` itself branches on. If nothing in the whole ladder
+satisfies both even at the floor size, it falls back to the ladder's
+largest entry (2 pages/2 columns) at the floor size anyway, with wrapping
+allowed and any still-unplaced content appended to the last page's last
+column — same "last resort" shape as `Manual` at too large a font, or as
+the on-screen Chords view's own `flowFit()` fallback.
+
+Because a song can now span more than one physical page, Auto can no longer
+lean on native CSS `column-count` the way Manual does — deciding what
+spills onto a *second* page requires knowing exactly where content gets
+cut, which column-count balancing doesn't expose. So Auto measures and
+places columns manually instead, mirroring the on-screen Chords view's own
+`chunkRows()`/`countFittingChunks()`/`flowFit()` approach rather than
+reusing it directly (print groups by `groupRowsIntoParts()`'s section-header
+parts instead of Chords' blank-line chunks, and measures against a real A4
+page's content height instead of the on-screen chart box):
+
+- `countFittingPrintParts()` — binary-searches how many leading parts fit in
+  one column (parallels Chords' `countFittingChunks()`).
+- `flowPrintPage()` — fills up to the ladder entry's column count for ONE
+  page, newspaper-style, returning whatever didn't fit as `overflow`
+  (parallels `flowFit()`).
+- `searchAutoPrintLayout()` — runs `flowPrintPage()` once per page in the
+  ladder entry, feeding each page's `overflow` into the next.
+- `renderAutoPrintSheets()` — renders the decided layout as one
+  `.print-sheet-fit`/`.print-sheet` pair per page (`.print-cols`/`.print-col`
+  flex children, placed at the already-decided widths — not CSS
+  `column-count`, which would just try to re-balance content this code
+  already placed deliberately). The title/description render only on the
+  first page.
+
+**A trap worth knowing if you touch this again**: the title/description
+rows sit *above* the columns on page 1 only, but take up real height that
+has to come out of page 1's budget before the columns get whatever's left.
+An early version of this measured each page's columns against the *full*
+page height on every page including page 1, which let page 1's columns
+measure as "fitting" and then silently push past the real page boundary
+once the title/description height was added back on render — invisible
+on screen (the `.print-sheet-fit` wrapper just scrolls), but a real extra
+page in the actual printed/PDF output, caught only by checking a real
+`page.pdf()` page count, not by inspecting the DOM. `measurePrintHeadRowsHeight()`
++ `searchAutoPrintLayout()`'s internal `pageBudget(pageIndex, fs)` fixes
+this: page 1's budget is `pageContentHeight - headRowsHeight`, every later
+page gets the full `pageContentHeight`. If you change what renders above
+the columns on page 1, make sure the budget calc still accounts for it.
+
+Both Auto and Manual still reuse the same `wrapRows()`/`groupRowsIntoParts()`
+primitives, so both read-only layout invariants above still hold regardless
+of mode, column count, or page count.
 
 This whole fit-mode toggle is deliberately stored in device-local
 `STATE.settings.printFitMode`, not in the published `printPrefs` — the
@@ -391,7 +433,11 @@ per-song-vs-global question isn't settled yet (see the queue/per-view-
 settings discussion this was born from), so it's kept as a local experiment
 you can try without it affecting anyone else's view or getting published.
 If/when a direction is settled, decide then whether this should move into
-`printPrefs` (team-wide) or stay device-local permanently.
+`printPrefs` (team-wide) or stay device-local permanently. The column/page
+ladder is Auto-only by deliberate choice, not an oversight — Manual's whole
+point is a user-chosen fixed size/column count, and "doesn't fit" isn't
+really a Manual concept (it already accepts wrapping and scrolling overflow
+by design).
 
 ## Making a change, end to end
 
