@@ -4258,20 +4258,26 @@ function measurePrintHeadRowsHeight(headRows, songWidth, fontSize, lineSpacing){
   document.body.removeChild(probe);
   return h;
 }
-// [pages, columns] tried in order, smallest layout first: a song only grows
-// past its default 1-column/1-page layout when it has to, column count is
-// tried before page count, and going to 2 pages restarts the column search
-// from 1 rather than carrying over whatever the 1-page attempt last tried.
-const PRINT_AUTO_LADDER = [[1,1],[1,2],[2,1],[2,2]];
-// Finds the song's Auto layout: the first (smallest) ladder entry, and
-// within it the largest font size, for which every row avoids wrapping
-// (anyRowNeedsWrap()) AND the whole song fits within that entry's page
-// budget (flowPrintPage(), run once per page, feeding each page's overflow
-// into the next). If nothing in the whole ladder satisfies both even at
-// PRINT_FONT_RANGE's floor, falls back to the ladder's largest entry
-// (2 pages/2 columns) at the floor size anyway, with wrapping allowed and
-// any still-leftover content appended to the last page's last column --
-// same "last resort" shape as flowFit()'s own fallback, left to
+// Auto's underlying goal is "as large as possible, as few pages as
+// possible" -- NOT "prefer 1 column." A song that happens to fit 1 column
+// at some small font might still fit 2 columns at a much bigger one (each
+// column only needs to hold roughly half the lines), so column count by
+// itself is never a reason to stop early: both 1 and 2 columns are always
+// tried, and whichever yields the larger font wins. Page count is still a
+// real escalation, though -- more pages always "helps" fit a bigger font in
+// the limit, which would defeat the one-sheet-per-song idea this print view
+// started from, so pages only grow past 1 when NEITHER column count fits
+// at any font in range within a single page.
+const PRINT_AUTO_MAX_PAGES = 2;
+// Finds the song's Auto layout: the largest font size (and, tied to it,
+// whichever column count achieves that size) that fits within 1 page; only
+// if NEITHER column count fits within 1 page at any font down to
+// PRINT_FONT_RANGE's floor does the search move to a 2-page budget and
+// repeat the same column comparison there. If nothing satisfies both
+// conditions (no wrapped row, fits the page budget) anywhere, falls back to
+// 2 pages/2 columns at the floor size anyway, with wrapping allowed and any
+// still-leftover content appended to the last page's last column -- same
+// "last resort" shape as flowFit()'s own fallback, left to
 // fitPrintSheets()'s per-sheet scroll-on-overflow.
 function searchAutoPrintLayout(song, songWidth, pageContentHeight, lineSpacing, showChords, showSections){
   const [lo, hi] = PRINT_FONT_RANGE;
@@ -4279,9 +4285,9 @@ function searchAutoPrintLayout(song, songWidth, pageContentHeight, lineSpacing, 
   const headRows = rows.filter(r => r.cls==='row-title' || r.cls==='row-desc');
   const bodyRows = rows.filter(r => r.cls!=='row-title' && r.cls!=='row-desc');
   // headRowsHeight only depends on fontSize (and the song's own title/
-  // description), not on columns/pages, but the ladder below re-tries the
-  // same font sizes across every ladder entry -- cached per size so it's
-  // measured once each rather than up to 4x redundantly.
+  // description), not on columns/pages, but every (columns, maxPages)
+  // combination below re-tries the same font sizes -- cached per size so
+  // it's measured once each rather than redundantly for every combination.
   const headRowsHeightCache = {};
   function headRowsHeightAt(fs){
     if (!(fs in headRowsHeightCache)) headRowsHeightCache[fs] = measurePrintHeadRowsHeight(headRows, songWidth, fs, lineSpacing);
@@ -4301,35 +4307,11 @@ function searchAutoPrintLayout(song, songWidth, pageContentHeight, lineSpacing, 
     return pageIndex === 0 ? pageContentHeight - headRowsHeightAt(fs) : pageContentHeight;
   }
 
-  // Only reached once every ladder entry has failed at every font size down
-  // to the floor -- so wrapping is unavoidable here, same as Manual mode at
-  // too large a font for its content. wrapRows() is used instead of the
-  // ladder's plain parts, and page/column filling is forced to make
-  // progress (flowPrintPage's own n===0->1 fallback) rather than require a
-  // clean fit.
-  function fallbackLayout(){
-    const [maxPages, columns] = PRINT_AUTO_LADDER[PRINT_AUTO_LADDER.length - 1];
-    const fontSize = lo;
-    const charW = measureMonoCharWidth(fontSize, 'pt');
-    const colWidth = columns===2 ? (songWidth - CHART_COL_GAP)/2 : songWidth;
-    const maxChars = Math.max(6, Math.floor(colWidth / charW));
-    let remaining = groupRowsIntoParts(bodyRows).map(part => wrapRows(part, maxChars));
-    const pages = [];
-    for (let p=0; p<maxPages && remaining.length>0; p++){
-      const { colBlocks, overflow } = flowPrintPage(remaining, columns, colWidth, pageBudget(p, fontSize), fontSize, lineSpacing);
-      pages.push(colBlocks);
-      remaining = overflow;
-    }
-    if (remaining.length>0){
-      if (!pages.length) pages.push([]);
-      const lastPage = pages[pages.length-1];
-      if (!lastPage.length) lastPage.push([]);
-      lastPage[lastPage.length-1].push(...remaining);
-    }
-    return { fontSize, columns, colWidth, lineSpacing, pages, headRows };
-  }
-
-  for (const [maxPages, columns] of PRINT_AUTO_LADDER){
+  // Largest font size (and resulting page layout) for a FIXED column count
+  // within a FIXED page budget, or null if nothing in PRINT_FONT_RANGE
+  // satisfies both conditions (no wrap, fits maxPages pages) at that column
+  // count.
+  function bestForColumns(columns, maxPages){
     const colWidth = columns===2 ? (songWidth - CHART_COL_GAP)/2 : songWidth;
     for (let fs = hi; fs >= lo; fs--){
       const charW = measureMonoCharWidth(fs, 'pt');
@@ -4344,8 +4326,47 @@ function searchAutoPrintLayout(song, songWidth, pageContentHeight, lineSpacing, 
       }
       if (remaining.length===0) return { fontSize: fs, columns, colWidth, lineSpacing, pages, headRows };
     }
+    return null;
   }
-  return fallbackLayout();
+  // Compares 1 vs 2 columns within the same page budget and keeps whichever
+  // reaches the larger font size -- a tie (equal font size either way)
+  // keeps 1 column, the simpler layout, since it cost nothing to prefer it.
+  function bestForPageBudget(maxPages){
+    const c1 = bestForColumns(1, maxPages);
+    const c2 = bestForColumns(2, maxPages);
+    if (c1 && c2) return c1.fontSize >= c2.fontSize ? c1 : c2;
+    return c1 || c2;
+  }
+
+  const onePage = bestForPageBudget(1);
+  if (onePage) return onePage;
+  const morePages = bestForPageBudget(PRINT_AUTO_MAX_PAGES);
+  if (morePages) return morePages;
+
+  // Only reached once every (columns, maxPages) combination above has
+  // failed at every font size down to the floor -- so wrapping is
+  // unavoidable here, same as Manual mode at too large a font for its
+  // content. wrapRows() is used instead of the plain parts, and page/
+  // column filling is forced to make progress (flowPrintPage's own
+  // n===0->1 fallback) rather than require a clean fit.
+  const fontSize = lo, columns = 2, maxPages = PRINT_AUTO_MAX_PAGES;
+  const charW = measureMonoCharWidth(fontSize, 'pt');
+  const colWidth = (songWidth - CHART_COL_GAP)/2;
+  const maxChars = Math.max(6, Math.floor(colWidth / charW));
+  let remaining = groupRowsIntoParts(bodyRows).map(part => wrapRows(part, maxChars));
+  const pages = [];
+  for (let p=0; p<maxPages && remaining.length>0; p++){
+    const { colBlocks, overflow } = flowPrintPage(remaining, columns, colWidth, pageBudget(p, fontSize), fontSize, lineSpacing);
+    pages.push(colBlocks);
+    remaining = overflow;
+  }
+  if (remaining.length>0){
+    if (!pages.length) pages.push([]);
+    const lastPage = pages[pages.length-1];
+    if (!lastPage.length) lastPage.push([]);
+    lastPage[lastPage.length-1].push(...remaining);
+  }
+  return { fontSize, columns, colWidth, lineSpacing, pages, headRows };
 }
 // Renders one song's Auto-mode layout (from searchAutoPrintLayout()) as one
 // .print-sheet-fit/.print-sheet pair per page, appended to `root` -- unlike

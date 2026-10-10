@@ -357,32 +357,45 @@ code.
   feature existed, adjustable with A−/A+ and the 1/2-column toggle.
   `renderPrintSongAt()` — relies on native CSS `column-count` to balance
   content across columns, since it only ever targets one sheet.
-- **`Auto`**: decides, independently **per song**, the smallest column/page
-  layout and the largest font size within it that together satisfy *both*
-  (a) the whole song fits, and (b) **no row needs to wrap at all** — not
-  even one chord+lyric pair. Because Auto now decides columns itself, the
-  1/2-column toggle has nothing to apply to in this mode and is visibly
-  disabled (`.seg.disabled`, toggled in `paintPrintPreview()`) rather than
-  left clickable with no effect.
+- **`Auto`**: decides, independently **per song**, the column count, page
+  count, and font size that together get the content as large as possible
+  while still satisfying *both* (a) the whole song fits, and (b) **no row
+  needs to wrap at all** — not even one chord+lyric pair. Because Auto now
+  decides columns itself, the 1/2-column toggle has nothing to apply to in
+  this mode and is visibly disabled (`.seg.disabled`, toggled in
+  `paintPrintPreview()`) rather than left clickable with no effect.
 
-#### Auto's column/page ladder
+#### Auto's goal is the largest readable text, not the fewest columns
 
-A song doesn't just get *a* font size in Auto — it may also grow past the
-default one-column/one-page layout if it has to. `searchAutoPrintLayout()`
-tries, in order (`PRINT_AUTO_LADDER`): **1 column/1 page → 2 columns/1 page
-→ 1 column/2 pages → 2 columns/2 pages**. Column count is tried before page
-count, and moving to 2 pages restarts the column search from 1 rather than
-carrying over whatever the 1-page attempt last tried — a song only grows
-columns, then pages, as far as it actually needs to. Within each ladder
-entry, font size is searched same as before (`PRINT_FONT_RANGE`, largest
-down to smallest, first one satisfying both conditions wins) using
-condition (b) via `anyRowNeedsWrap()`, same per-row length-vs-`maxChars`
-test `wrapRows()` itself branches on. If nothing in the whole ladder
-satisfies both even at the floor size, it falls back to the ladder's
-largest entry (2 pages/2 columns) at the floor size anyway, with wrapping
-allowed and any still-unplaced content appended to the last page's last
-column — same "last resort" shape as `Manual` at too large a font, or as
-the on-screen Chords view's own `flowFit()` fallback.
+`searchAutoPrintLayout()`'s underlying premise: the person printing doesn't
+care whether it's 1 column or 2, only that the text ends up as large as
+page count allows — so column count is never a reason to stop searching
+early. A song that already fits nicely in 1 column at some font might still
+fit 2 columns at a *meaningfully bigger* one (each column only needs to
+hold roughly half the lines), so **both column counts are always tried**,
+and whichever reaches the larger font size wins (`bestForColumns()` finds
+the best font for one fixed column count; `bestForPageBudget()` runs it for
+both 1 and 2 columns and keeps the winner — a tie keeps 1 column, the
+simpler layout, since it cost nothing to prefer it). This was deliberately
+rebuilt from an earlier "ladder" version that stopped at the first column
+count that fit *at all* (1 column first, 2 only as a fallback) — verified
+against the real 37-song seed library that this under-used 2-column
+headroom: several songs jumped by 2-6pt once 2-column was actually
+compared against 1-column instead of only reached on 1-column's outright
+failure (e.g. one real seed song went from 8pt/1-column to 14pt/2-column).
+
+Page count is still a real escalation step, though, not folded into the
+same "always try both" comparison — more pages always "helps" fit a bigger
+font in the limit, which would defeat the one-sheet-per-song idea this
+print view started from. So `bestForPageBudget(1)` (both column counts,
+within a single page) is tried first; only if **neither** column count fits
+within 1 page at any font down to `PRINT_FONT_RANGE`'s floor does the
+search move to `bestForPageBudget(PRINT_AUTO_MAX_PAGES)` (currently 2) and
+repeat the same 1-vs-2-column comparison there. If nothing satisfies both
+conditions anywhere, it falls back to 2 pages/2 columns at the floor size
+anyway, with wrapping allowed and any still-unplaced content appended to
+the last page's last column — same "last resort" shape as `Manual` at too
+large a font, or as the on-screen Chords view's own `flowFit()` fallback.
 
 Because a song can now span more than one physical page, Auto can no longer
 lean on native CSS `column-count` the way Manual does — deciding what
@@ -396,11 +409,13 @@ page's content height instead of the on-screen chart box):
 
 - `countFittingPrintParts()` — binary-searches how many leading parts fit in
   one column (parallels Chords' `countFittingChunks()`).
-- `flowPrintPage()` — fills up to the ladder entry's column count for ONE
-  page, newspaper-style, returning whatever didn't fit as `overflow`
-  (parallels `flowFit()`).
-- `searchAutoPrintLayout()` — runs `flowPrintPage()` once per page in the
-  ladder entry, feeding each page's `overflow` into the next.
+- `flowPrintPage()` — fills up to a given column count for ONE page,
+  newspaper-style, returning whatever didn't fit as `overflow` (parallels
+  `flowFit()`).
+- `bestForColumns()` — runs `flowPrintPage()` once per page for a *fixed*
+  column count and page budget, feeding each page's `overflow` into the
+  next, and returns the largest font size (and resulting page layout) that
+  fits cleanly, or `null`.
 - `renderAutoPrintSheets()` — renders the decided layout as one
   `.print-sheet-fit`/`.print-sheet` pair per page (`.print-cols`/`.print-col`
   flex children, placed at the already-decided widths — not CSS
@@ -433,8 +448,8 @@ per-song-vs-global question isn't settled yet (see the queue/per-view-
 settings discussion this was born from), so it's kept as a local experiment
 you can try without it affecting anyone else's view or getting published.
 If/when a direction is settled, decide then whether this should move into
-`printPrefs` (team-wide) or stay device-local permanently. The column/page
-ladder is Auto-only by deliberate choice, not an oversight — Manual's whole
+`printPrefs` (team-wide) or stay device-local permanently. This column/page
+search is Auto-only by deliberate choice, not an oversight — Manual's whole
 point is a user-chosen fixed size/column count, and "doesn't fit" isn't
 really a Manual concept (it already accepts wrapping and scrolling overflow
 by design).
