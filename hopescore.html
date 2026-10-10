@@ -495,12 +495,18 @@
     padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--paper-line);
   }
   .print-toolbar-hint{ font-size:12px; color:var(--muted); flex:1; min-width:120px; }
-  .print-page-wrap{ display:flex; justify-content:center; padding:28px 16px 60px; }
+  /* display:block, not flex+justify-content:center -- a flex child with no
+     explicit width shrinks to fit its content, which leaves .print-root
+     with no definite width for ITS OWN width:100% children (.print-sheet-fit)
+     to resolve a percentage against (computes to 0). Each .print-sheet-fit
+     below centers/caps itself instead, so this wrap just needs to hand
+     down its full content width via normal block layout. */
+  .print-page-wrap{ padding:28px 16px 60px; }
   /* One song = one .print-sheet = one visual A4 page, stacked with a real
      gap between them -- not just one long scrolling box -- so the on-screen
      preview actually shows where pages break, matching the real printed/PDF
      output instead of only revealing pagination once you print. */
-  .print-root{ display:flex; flex-direction:column; align-items:center; gap:24px; }
+  .print-root{ display:flex; flex-direction:column; gap:24px; }
   /* Sized in mm, matching @page{size:A4; margin:6mm} below exactly -- not
      just visually (so the preview looks like real paper), but so the
      on-screen content width used to compute where chord/lyric lines wrap
@@ -513,13 +519,43 @@
      can actually render without clipping content in their own fixed
      non-printable border -- 0 isn't safe across real printers, this is. */
   .print-sheet{
-    width:210mm; min-height:297mm; background:#fff; color:#111; box-shadow:0 2px 16px rgba(0,0,0,.3);
+    width:210mm; min-height:297mm; background:#fff; color:#111;
     padding:6mm; box-sizing:border-box; flex-shrink:0;
   }
-  /* One song per page by default: every sheet after the first forces a new
-     physical page when actually printed (break-before only takes effect in
-     paged/print media -- the gap above is what shows separation on screen). */
-  .print-sheet + .print-sheet{ break-before:page; }
+  /* .print-sheet-fit wraps each .print-sheet so it's visible (and usable)
+     on a phone -- .print-sheet's own true A4 width (~794px) is wider than
+     most phones, which used to force horizontal scrolling/pinch-zoom just
+     to see one page. fitPrintSheets() (section 7, called after every
+     paintPrintPreview() render and on resize) measures this wrap's real
+     rendered width and scales the .print-sheet inside it down (or up, up
+     to its true A4 size) to fit via a plain CSS transform -- not a
+     rasterized image -- so the wrap's own box always stays exactly
+     A4-shaped (aspect-ratio locked) regardless of viewport width. A song
+     whose content needs more than one true A4 page's height doesn't shrink
+     to compensate (that's a separate, not-yet-built on-screen pagination
+     problem -- see CLAUDE.md) -- it just scrolls inside this fixed-shape
+     box instead of the box growing taller than a real page would be. */
+  .print-sheet-fit{
+    width:100%; max-width:210mm; margin:0 auto; aspect-ratio:210/297;
+    position:relative; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch;
+    background:#fff; box-shadow:0 2px 16px rgba(0,0,0,.3); flex-shrink:0;
+  }
+  .print-sheet-fit .print-sheet{ position:absolute; top:0; left:0; transform-origin:top left; }
+  /* One song per page by default: EVERY sheet (including the first) forces
+     a new physical page when actually printed -- break-before only takes
+     effect in paged/print media, so this has no visual effect on screen
+     (the gap from .print-root's own `gap` is what shows separation there).
+     Applied unconditionally rather than via a "+ .print-sheet" adjacent-
+     sibling selector: each .print-sheet now lives one level deeper inside
+     its own .print-sheet-fit wrapper, so .print-sheet elements are never
+     actually DOM-adjacent to each other any more, on screen or under
+     print -- display:contents on .print-sheet-fit below removes its BOX
+     from the print render, but does not change DOM structure or make an
+     adjacent-sibling selector start matching. break-before:page on the
+     very first box in a fragmentation context is a no-op (nothing before
+     it to break from), so applying it to all of them is safe -- verified
+     via a real page.pdf() page count, not just assumed. */
+  .print-sheet{ break-before:page; }
   .print-song{ white-space:pre; }
   /* One "part" (a section header plus all its chord/lyric rows, as grouped
      by groupRowsIntoParts()) must never be torn across a column or page
@@ -545,7 +581,24 @@
     .no-print{ display:none !important; }
     .print-page-wrap{ padding:0; display:block; }
     .print-root{ display:block; } /* the on-screen gap between sheets isn't needed once @page+break-before:page do the real pagination */
-    .print-sheet{ width:auto; min-height:0; box-shadow:none; padding:0; }
+    /* display:contents removes .print-sheet-fit's own box from the print
+       render entirely -- its only job (locking an A4-shaped, scrollable
+       box for the on-screen phone view) is screen-only. Without this,
+       printing would also apply its fixed aspect-ratio/overflow/max-width
+       to the real page, clipping or shrinking content that's supposed to
+       flow across real, unconstrained printed pages. */
+    .print-sheet-fit{ display:contents; }
+    /* Same compound selector as the base .print-sheet-fit .print-sheet rule
+       (not just .print-sheet) -- needed to actually win: that base rule's
+       two-class specificity otherwise beats a plain .print-sheet override
+       regardless of source order, and position:absolute leaking into print
+       breaks pagination (break-before:page has nothing real to flow
+       multiple pages from if every sheet is independently positioned). */
+    /* transform keeps !important: fitPrintSheets() sets it as an inline
+       style (needed for the on-screen scale), and only !important in a
+       stylesheet rule can override an inline style at all, regardless of
+       selector specificity or source order. */
+    .print-sheet-fit .print-sheet{ transform:none !important; position:static; width:auto; min-height:0; padding:0; }
     @page{ size:A4; margin:6mm; }
   }
 
@@ -3956,6 +4009,7 @@ presentEl.addEventListener('touchend', (e)=>{
 window.addEventListener('resize', ()=>{
   if (presentEl.classList.contains('open')) paintPresent();
   else if (route.view==='song' && activeSongRepaint) activeSongRepaint();
+  if (printPreviewEl.classList.contains('open')) fitPrintSheets();
 });
 
 /* =========================================================================
@@ -4023,7 +4077,11 @@ function paintPrintPreview(){
   songs.forEach(song=>{
     // One sheet per song -- see .print-sheet's CSS for why this is what
     // actually makes "one page per song" visible on screen, not just in
-    // the real print/PDF output.
+    // the real print/PDF output. Wrapped in .print-sheet-fit (see its CSS)
+    // so it's actually usable on a phone -- fitPrintSheets() below scales
+    // it to the wrap's real width once all songs are built.
+    const fitEl = document.createElement('div');
+    fitEl.className = 'print-sheet-fit';
     const sheetEl = document.createElement('div');
     sheetEl.className = 'print-sheet';
     const songEl = document.createElement('div');
@@ -4033,7 +4091,8 @@ function paintPrintPreview(){
     songEl.style.columnCount = prefs.columns;
     songEl.style.columnGap = CHART_COL_GAP+'px';
     sheetEl.appendChild(songEl);
-    root.appendChild(sheetEl); // must be in the DOM before clientWidth means anything
+    fitEl.appendChild(sheetEl);
+    root.appendChild(fitEl); // must be in the DOM before clientWidth means anything
     const colWidth = prefs.columns===2 ? (songEl.clientWidth - CHART_COL_GAP)/2 : songEl.clientWidth;
     const maxChars = Math.max(6, Math.floor(colWidth / charW));
     const rows = filterPresentRows(computeSongRows(song, 'original', null), prefs.showChords, prefs.showSections);
@@ -4058,6 +4117,37 @@ function paintPrintPreview(){
       for (const r of wrapRows(part, maxChars)) partEl.appendChild(rowToLineEl(r));
       songEl.appendChild(partEl);
     }
+  });
+  fitPrintSheets();
+}
+// Scales each .print-sheet down (or up, capped at its true A4 size by
+// max-width:210mm on .print-sheet-fit itself) to fit the real rendered
+// width of its wrap -- done via a CSS transform on the already-built
+// content, not a rasterized image, so text stays crisp/selectable and the
+// chord/lyric wrap-width math above (which needs .print-sheet at its true
+// unscaled size to measure correctly) is completely unaffected: this only
+// runs after that measuring is already done. Called after every
+// paintPrintPreview() render and on window resize (see below) -- cheap
+// enough to just always recompute rather than track whether the width
+// actually changed.
+function fitPrintSheets(){
+  document.querySelectorAll('#printRoot .print-sheet-fit').forEach(fitEl=>{
+    const sheetEl = fitEl.querySelector('.print-sheet');
+    if (!sheetEl) return;
+    sheetEl.style.transform = 'none';
+    sheetEl.style.width = '';
+    sheetEl.style.height = '';
+    const naturalW = sheetEl.getBoundingClientRect().width;
+    const naturalH = sheetEl.getBoundingClientRect().height;
+    const wrapW = fitEl.clientWidth;
+    if (!naturalW || !wrapW) return;
+    const scale = wrapW / naturalW;
+    sheetEl.style.transform = `scale(${scale})`;
+    // An absolutely-positioned child needs an explicit size for its
+    // (scaled) overflow to register on the ancestor's overflow-y:auto --
+    // without this a song taller than one page wouldn't actually scroll.
+    sheetEl.style.width = naturalW+'px';
+    sheetEl.style.height = naturalH+'px';
   });
 }
 
