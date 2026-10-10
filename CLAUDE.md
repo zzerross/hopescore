@@ -236,6 +236,68 @@ now fixed, but worth understanding why):
   http(s). Mock `https://api.github.com/repos/**` with Playwright's
   `page.route()` to test the publish flow without hitting a real repo.
 
+## Read-only view layout invariants
+
+Two hard requirements apply to every read-only view (Chords, Prompter,
+Present, and the A4 print preview) that lays chord/lyric content into
+columns or pages — not just the print view, even though that's the only
+one currently affected in practice (see "If you're moving more views
+toward A4 proportions" below). Keep both in mind before touching
+`wrapRows()`/`wrapAligned()` or `paintPrintPreview()`'s section-grouping
+(all section 6/7) — a real, shipped bug in each of these shape this
+section, not a hypothetical concern.
+
+1. **A part (a section header plus its chord/lyric rows — Verse, Chorus,
+   Bridge, an auto-detected "Intro", etc.) must never be split across a
+   column or page break.** If a part doesn't fit in what's left of the
+   current column/page, the *whole part* moves to the next one — never
+   half of it. In the print view this is `groupRowsIntoParts()` wrapping
+   each part in its own `.print-part`, with that class's `break-inside:
+   avoid` doing the actual enforcement at render time. The on-screen
+   Chords view's own column layout (`flowFit()`/`chunkRows()`) already had
+   an equivalent, independently-written safeguard before this was
+   documented — it groups by *blank-line* boundaries rather than by
+   section headers, which is usually equivalent (this app's convention is
+   a blank line between parts) but isn't guaranteed to be if a song's body
+   ever breaks that convention. If you ever unify these two mechanisms,
+   prefer the section-header-based grouping (`groupRowsIntoParts()`) as
+   the more precise definition of "part" — that's literally what the word
+   means here. The one case this can't fix: a single part taller than an
+   entire column/page — `break-inside:avoid` can only move content as a
+   unit, it can't shrink it to make it fit, and nothing here attempts to.
+2. **A single chord token must never be split across a wrapped line —
+   ever.** `Dm7` rendered as `D` on one line and `m7` continuing the next
+   is always a bug, no matter how narrow the column. This shipped for
+   real: `wrapAligned()`'s break-point search used to be based only on the
+   *lyric* line's spacing (the "primary" text passed to the old
+   `findBreakPoints()`), not the chord line's — a chord sits wherever its
+   change happens in the lyric, often mid-word, so a perfectly good lyric
+   word-wrap point could land (and did land, in production) in the middle
+   of a chord token on the line above it. `findBreakPoints()` now requires
+   a cut position to be safe for *both* strings at once (`isSafeCutPoint()`),
+   and if the column is so narrow that no safe point exists within budget,
+   it searches forward past `maxChars` for the next one rather than ever
+   slicing a token — the same thing a browser does on its own for an
+   unbreakable long word under normal text wrapping (it overflows instead
+   of getting mangled).
+
+### If you're moving more views toward A4 proportions
+
+The print view is the only one of the four read-only views that currently
+lays content into real *pages* (not just columns) and enforces both
+invariants above. If the A4 print view's layout holds up well enough to
+become the shared layout engine for some or all of the on-screen views too
+— an idea under consideration for this project, not yet started — both
+invariants need to keep holding for whichever views adopt it; they're
+requirements of the *layout*, not something specific to printing.
+`wrapRows()`/`wrapAligned()` already don't know or care whether their
+caller is on-screen or print, so invariant 2 travels for free to any new
+caller. Invariant 1 (`groupRowsIntoParts()` + `.print-part`'s
+`break-inside:avoid`) is currently wired up only inside
+`paintPrintPreview()` and would need deliberately carrying over to
+wherever else starts doing paginated or columned layout — it won't happen
+automatically just by reusing `wrapRows()`.
+
 ## Making a change, end to end
 
 1. Edit `hopescore.html` directly — no build step.

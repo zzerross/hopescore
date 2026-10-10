@@ -521,6 +521,14 @@
      paged/print media -- the gap above is what shows separation on screen). */
   .print-sheet + .print-sheet{ break-before:page; }
   .print-song{ white-space:pre; }
+  /* One "part" (a section header plus all its chord/lyric rows, as grouped
+     by groupRowsIntoParts()) must never be torn across a column or page
+     break -- break-inside:avoid makes the whole group atomic: if it doesn't
+     fit in what's left of the current column/page, the WHOLE group moves to
+     the next one rather than splitting mid-section. Only fails for a single
+     part literally taller than one whole column/page, which no CSS rule can
+     fix without shrinking content -- not attempted here. */
+  .print-part{ break-inside:avoid; }
   .print-song .row-title{ column-span:all; color:#111; font-weight:700; font-size:1.5em; margin-bottom:.1em; white-space:normal; }
   .print-song .row-desc{ column-span:all; color:#333; font-style:italic; font-weight:400; margin-bottom:.9em; white-space:pre-wrap; font-size:.8em; }
   .print-song .row-section{ color:#111; font-weight:700; margin-top:1em; break-after:avoid; }
@@ -2427,21 +2435,40 @@ function computeSongRows(song, mode, targetVal){
   }
   return rows;
 }
+function rowToLineEl(r){
+  const div = document.createElement('div');
+  div.className = 'line ' + r.cls;
+  if (r.href){
+    const a = document.createElement('a');
+    a.href = r.href; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.textContent = r.text || r.href;
+    div.appendChild(a);
+  } else {
+    div.textContent = r.text || ' ';
+  }
+  return div;
+}
 function rowsToChartDom(rows, container){
   container.innerHTML='';
+  for (const r of rows) container.appendChild(rowToLineEl(r));
+}
+// Groups rows into "parts" (a section header -- Verse/Chorus/Bridge/etc,
+// including an auto-detected one like "Intro" -- plus every row that
+// follows it up to the next section header). Rows before the first section
+// header, if any, form their own leading part. Used by the print preview
+// (see .print-part's CSS) to keep a whole part from being torn across a
+// column or page break -- never just a convenience grouping, since a
+// verse/chorus split mid-way across a page is unreadable without flipping
+// back and forth.
+function groupRowsIntoParts(rows){
+  const groups = [];
+  let cur = [];
   for (const r of rows){
-    const div = document.createElement('div');
-    div.className = 'line ' + r.cls;
-    if (r.href){
-      const a = document.createElement('a');
-      a.href = r.href; a.target = '_blank'; a.rel = 'noopener noreferrer';
-      a.textContent = r.text || r.href;
-      div.appendChild(a);
-    } else {
-      div.textContent = r.text || ' ';
-    }
-    container.appendChild(div);
+    if (r.cls === 'row-section' && cur.length){ groups.push(cur); cur = []; }
+    cur.push(r);
   }
+  if (cur.length) groups.push(cur);
+  return groups;
 }
 function splitRowsForColumns(rows){
   // Group rows into chunks separated by blank rows, so a chord/lyric pair or a
@@ -2471,8 +2498,25 @@ const CHART_COL_GAP = 24;
 /* ---- fixed-size "wrap" mode: break long chord/lyric pairs onto continuation
    lines instead of shrinking the font, keeping their column alignment ---- */
 function trimEnd(s){ return s.replace(/\s+$/,''); }
-function findBreakPoints(text, maxChars){
-  const len = text.length;
+// Cutting a string right before index i is unsafe only if it would land
+// inside a contiguous non-space run there (splitting one token in two) --
+// i.e. both the character just before i and the character at i are
+// non-space. Index 0 and the string's own length are always safe (nothing
+// to split at either end).
+function isSafeCutPoint(s, i){
+  if (i<=0 || i>=s.length) return true;
+  return s[i-1]===' ' || s[i]===' ';
+}
+// Finds cut points that are safe for BOTH `a` and `b` at once -- critical
+// when `a`/`b` are a lyric line and its chord line: a space in the lyric at
+// some column doesn't mean the chord line has a space there too (a chord
+// is positioned over whatever syllable it changes on, often mid-word), so
+// picking break points from the lyric's spacing alone -- the previous
+// version of this function -- could and did cut a chord token in half
+// (e.g. "Dsus" rendered as "D" then "sus" on the continuation line) even
+// though the lyric itself wrapped at a perfectly good word boundary.
+function findBreakPoints(a, b, maxChars){
+  const len = a.length;
   if (len <= maxChars) return [[0,len]];
   const points = [];
   let pos = 0;
@@ -2480,7 +2524,17 @@ function findBreakPoints(text, maxChars){
     let end = Math.min(pos+maxChars, len);
     if (end < len){
       let cut = -1;
-      for (let i=end; i>pos; i--){ if (text[i-1]===' '){ cut = i; break; } }
+      for (let i=end; i>pos; i--){ if (isSafeCutPoint(a,i) && isSafeCutPoint(b,i)){ cut = i; break; } }
+      if (cut === -1){
+        // No safe cut within the budget -- rather than slice a token in
+        // half, let this one line run past maxChars: search forward for
+        // the next point safe for both. Same call a browser itself makes
+        // for an unbreakable long word with normal word-wrap -- it
+        // overflows the box instead of getting mangled. Only reached at
+        // pathologically narrow column widths (a token wider than the
+        // whole column); real print columns are nowhere near this tight.
+        for (let i=end+1; i<=len; i++){ if (isSafeCutPoint(a,i) && isSafeCutPoint(b,i)){ cut = i; break; } }
+      }
       if (cut > pos) end = cut;
     }
     points.push([pos, end]);
@@ -2488,15 +2542,16 @@ function findBreakPoints(text, maxChars){
   }
   return points;
 }
-// Wraps `primary` (used to choose break points, e.g. the lyric) together with
-// `secondary` (e.g. the chord line above it) at the same cut positions, so
-// wrapped continuation lines stay vertically aligned with each other.
+// Wraps `primary` (e.g. the lyric) together with `secondary` (e.g. the
+// chord line above it) at cut positions safe for *both*, so wrapped
+// continuation lines stay vertically aligned with each other and neither
+// line ever has a word or chord token sliced across the break.
 function wrapAligned(primary, secondary, maxChars){
   const len = Math.max(primary.length, (secondary||'').length);
   if (len <= maxChars) return [[trimEnd(primary), trimEnd(secondary||'')]];
   const a = primary.padEnd(len, ' ');
   const b = (secondary||'').padEnd(len, ' ');
-  return findBreakPoints(a, maxChars).map(([s,e]) => [trimEnd(a.slice(s,e)), trimEnd(b.slice(s,e))]);
+  return findBreakPoints(a, b, maxChars).map(([s,e]) => [trimEnd(a.slice(s,e)), trimEnd(b.slice(s,e))]);
 }
 function wrapRows(rows, maxChars){
   const out = [];
@@ -3950,7 +4005,20 @@ function paintPrintPreview(){
     // they actually have room for.
     const headRows = rows.filter(r => r.cls==='row-title' || r.cls==='row-desc');
     const bodyRows = rows.filter(r => r.cls!=='row-title' && r.cls!=='row-desc');
-    rowsToChartDom([...headRows, ...wrapRows(bodyRows, maxChars)], songEl);
+    songEl.innerHTML = '';
+    for (const r of headRows) songEl.appendChild(rowToLineEl(r));
+    // Each part (section header + its chord/lyric rows) gets wrapped in its
+    // own .print-part -- see that class's CSS -- so a verse/chorus/etc.
+    // never gets split across a column or page break. Grouped BEFORE
+    // wrapRows() (not after) so a long section-header line that itself
+    // needs wrapping can't produce extra 'row-section'-classed continuation
+    // rows that would be mistaken for the start of a new part.
+    for (const part of groupRowsIntoParts(bodyRows)){
+      const partEl = document.createElement('div');
+      partEl.className = 'print-part';
+      for (const r of wrapRows(part, maxChars)) partEl.appendChild(rowToLineEl(r));
+      songEl.appendChild(partEl);
+    }
   });
 }
 
