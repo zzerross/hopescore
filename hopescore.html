@@ -467,7 +467,7 @@
      nothing clickable in that clipped sliver. Pinned to their natural size;
      .present-top's own overflow-x:auto is what absorbs any leftover
      overflow now, on whatever's narrowest. */
-  #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentColSeg, #presentFitSeg, #presentFontSeg, #presentSpacingSeg, #presentClose{ flex-shrink:0; }
+  #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentColSeg, #presentFitToggle, #presentFontSeg, #presentSpacingSeg, #presentClose{ flex-shrink:0; }
   .present-body{ flex:1; position:relative; overflow:hidden; padding:0 26px 26px; }
   .present-chart-wrap{
     position:absolute; inset:0 26px 26px; display:flex;
@@ -692,10 +692,7 @@
       <button data-col="1" title="1 column">1</button>
       <button data-col="2" title="2 columns">2</button>
     </div>
-    <div class="seg" id="presentFitSeg">
-      <button data-fit="auto" title="Shrink text so nothing wraps">Auto</button>
-      <button data-fit="wrap" title="Keep font size fixed; wrap long lines">Wrap</button>
-    </div>
+    <button class="iconbtn" id="presentFitToggle" title="Auto: shrink text so nothing wraps. Off: fixed size, adjust with A−/A+">Auto</button>
     <div class="seg" id="presentFontSeg" title="Font size -- remembered per song, for chords shown vs. hidden">
       <button id="presentFontDec" title="Smaller">A−</button>
       <span class="font-size-label" id="presentFontLabel"></span>
@@ -725,10 +722,7 @@
       <button data-col="1" title="1 column">1</button>
       <button data-col="2" title="2 columns">2</button>
     </div>
-    <div class="seg" id="printFitSeg" title="Font size per song">
-      <button data-fit="auto" title="Largest size per song with no wrapped lines, that still fits one page">Auto</button>
-      <button data-fit="wrap" title="Same fixed font size for every song, set manually with A−/A+">Manual</button>
-    </div>
+    <button class="iconbtn" id="printFitToggle" title="Auto: largest size per song with no wrapped lines, that still fits one page. Off: same fixed size/columns for every song, set with A−/A+ and the column toggle">Auto</button>
     <div class="seg" id="printFontSeg" title="Print font size">
       <button id="printFontDec" title="Smaller">A−</button>
       <span class="font-size-label" id="printFontLabel"></span>
@@ -3632,10 +3626,7 @@ function renderSongView(songId){
       <button data-col="1" class="${prefs.columns===1?'active':''}">1</button>
       <button data-col="2" class="${prefs.columns===2?'active':''}">2</button>
     </div>
-    <div class="seg" id="fitSeg">
-      <button data-fit="auto" class="${prefs.fitMode!=='wrap'?'active':''}" title="Shrink text so nothing wraps">Auto</button>
-      <button data-fit="wrap" class="${prefs.fitMode==='wrap'?'active':''}" title="Keep font size fixed; wrap long lines">Wrap</button>
-    </div>
+    <button class="iconbtn ${prefs.fitMode!=='wrap'?'primary':''}" id="fitToggle" title="Auto: shrink text so nothing wraps. Off: fixed size, adjust with A−/A+">Auto</button>
     <div class="seg" id="fontSizeSeg" title="Base font size for chords/lyrics -- remembered per song on this device">
       <button id="fontDec" title="Smaller">A−</button>
       <span class="font-size-label" id="fontSizeLabel">${getFontSize('chords', song.id)}px</span>
@@ -3755,6 +3746,11 @@ function renderSongView(songId){
 
   const chartEl = document.getElementById('songChart');
   const chartCard = chartEl.parentElement;
+  // Set by repaint()'s Auto branch to whatever size it last actually
+  // rendered at -- read by the Auto/Manual toggle below so turning Auto off
+  // freezes the size you were just looking at instead of jumping to
+  // whatever fixed size happened to be stored from before.
+  let lastAutoFontSize = null;
   function repaint(){
     const rows = computeSongRows(song, prefs.mode, prefs.target);
     requestAnimationFrame(()=>{
@@ -3770,6 +3766,12 @@ function renderSongView(songId){
         chartCard.style.overflow = 'hidden';
         const boxHeight = cardHeight - 28;           // minus 14px+14px vertical padding
         const result = layoutChart(chartEl, rows, prefs.columns, boxWidth, boxHeight, {fitMode:'auto', lineSpacing: getLineSpacing('chords', song.id)});
+        lastAutoFontSize = result.size;
+        // The label otherwise only updates from bumpFontSize() (Manual
+        // mode), so it would keep showing a stale stored size the whole
+        // time Auto is active -- mismatching what Auto just froze if you
+        // then turn it off.
+        document.getElementById('fontSizeLabel').textContent = result.size+'px';
         if (result.scrolled){
           // Even the smallest usable size couldn't flow everything into the
           // available columns -- let the card grow and the page scroll
@@ -3821,11 +3823,23 @@ function renderSongView(songId){
     document.querySelectorAll('#colSeg button').forEach(b=>b.classList.toggle('active', b===btn));
     repaint();
   });
-  document.getElementById('fitSeg').addEventListener('click', (e)=>{
-    const btn = e.target.closest('button'); if (!btn) return;
-    prefs.fitMode = btn.dataset.fit;
+  // A single Auto/Manual toggle rather than two segmented buttons -- the
+  // two states (fitMode 'auto'/'wrap') are mutually exclusive already, so a
+  // second button for "Manual" added nothing a plain on/off didn't already
+  // say. Turning Auto off freezes whatever size it was just showing
+  // (lastAutoFontSize, set by repaint()'s Auto branch) into the fixed size,
+  // so the view doesn't jump to an unrelated stored value the moment you
+  // turn it off -- only A-/A+ actually changes the number from there.
+  document.getElementById('fitToggle').addEventListener('click', ()=>{
+    if (prefs.fitMode !== 'wrap'){
+      if (lastAutoFontSize != null) setFontSize('chords', song.id, lastAutoFontSize);
+      prefs.fitMode = 'wrap';
+    } else {
+      prefs.fitMode = 'auto';
+    }
     setDefaultFitMode(prefs.fitMode);
-    document.querySelectorAll('#fitSeg button').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('fitToggle').classList.toggle('primary', prefs.fitMode!=='wrap');
+    document.getElementById('fontSizeLabel').textContent = getFontSize('chords', song.id)+'px';
     repaint();
   });
   // A-/A+ always work, even in Auto mode: nudging the size is a manual
@@ -3835,7 +3849,7 @@ function renderSongView(songId){
     if (prefs.fitMode !== 'wrap'){
       prefs.fitMode = 'wrap';
       setDefaultFitMode('wrap');
-      document.querySelectorAll('#fitSeg button').forEach(b=>b.classList.toggle('active', b.dataset.fit==='wrap'));
+      document.getElementById('fitToggle').classList.remove('primary');
     }
     setFontSize('chords', song.id, getFontSize('chords', song.id)+delta);
     document.getElementById('fontSizeLabel').textContent = getFontSize('chords', song.id)+'px';
@@ -3894,6 +3908,11 @@ viewRoot.addEventListener('touchend', (e)=>{
 const presentEl = document.getElementById('present');
 let presentQueue = [];
 let presentIdx = 0;
+// Set by paintPresent() whenever it actually renders in Auto mode, to
+// whatever size that render settled on -- read by the Auto/Manual toggle so
+// turning Auto off freezes the size just shown instead of jumping to
+// whatever fixed size happened to be stored from before.
+let presentLastAutoFontSize = null;
 
 function openPresent(songIds, startIdx){
   if (!songIds || songIds.length===0){ toast('The setlist is empty'); return; }
@@ -3952,7 +3971,7 @@ function paintPresent(){
   // chords hidden they still record the choice for whenever chords come
   // back on, same as how font size buckets by view.
   document.querySelectorAll('#presentColSeg button').forEach(b=> b.classList.toggle('active', Number(b.dataset.col)===prefs.columns));
-  document.querySelectorAll('#presentFitSeg button').forEach(b=> b.classList.toggle('active', b.dataset.fit==='wrap' ? prefs.fitMode==='wrap' : prefs.fitMode!=='wrap'));
+  document.getElementById('presentFitToggle').classList.toggle('primary', prefs.fitMode!=='wrap');
   let rows = computeSongRows(song, prefs.mode, prefs.target);
   // Chords hidden always uses a single full-width column at a large fixed
   // size (scrolling if a song runs long), like a real stage prompter/
@@ -3967,7 +3986,15 @@ function paintPresent(){
   const chartEl = document.getElementById('presentChart');
   requestAnimationFrame(()=>{
     const box = document.querySelector('.present-chart-wrap');
-    layoutChart(chartEl, rows, columns, box.clientWidth, box.clientHeight, {fitMode, fontSize, lineSpacing});
+    const result = layoutChart(chartEl, rows, columns, box.clientWidth, box.clientHeight, {fitMode, fontSize, lineSpacing});
+    if (fitMode !== 'wrap'){
+      presentLastAutoFontSize = result.size;
+      // presentFontLabel was already set above from the stored (Manual)
+      // size -- overwrite it with what Auto actually rendered at, so the
+      // label doesn't keep showing a stale number the whole time Auto is
+      // active, mismatching what turning it off would freeze.
+      document.getElementById('presentFontLabel').textContent = result.size+'px';
+    }
   });
 }
 function presentStep(delta){
@@ -4028,12 +4055,24 @@ document.getElementById('presentColSeg').addEventListener('click', (e)=>{
   setDefaultColumns(prefs.columns);
   paintPresent();
 });
-document.getElementById('presentFitSeg').addEventListener('click', (e)=>{
-  const btn = e.target.closest('button[data-fit]'); if (!btn) return;
+// Single Auto/Manual toggle, same reasoning as the regular song view's
+// #fitToggle: the two states are already mutually exclusive, so a second
+// "Manual" button said nothing a plain on/off didn't. Turning Auto off
+// freezes presentLastAutoFontSize (set by paintPresent()'s own render)
+// into the fixed size first, so it doesn't jump to an unrelated stored
+// value the moment you turn it off.
+document.getElementById('presentFitToggle').addEventListener('click', ()=>{
   const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
   if (!song) return;
   const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
-  prefs.fitMode = btn.dataset.fit;
+  if (prefs.fitMode !== 'wrap'){
+    if (presentLastAutoFontSize != null && getPresentShowChords()){
+      setFontSize('chords', song.id, presentLastAutoFontSize);
+    }
+    prefs.fitMode = 'wrap';
+  } else {
+    prefs.fitMode = 'auto';
+  }
   setDefaultFitMode(prefs.fitMode);
   paintPresent();
 });
@@ -4087,6 +4126,13 @@ let printDate = null;
 // a date's setlist (see the "All songs" select-all/checkbox UI in
 // renderHomeView) -- takes priority over printDate's setlist when present.
 let printSongIds = null;
+// Set by paintPrintPreview()'s Auto branch to the FIRST displayed song's
+// computed {fontSize, columns} -- Auto decides both per song, but Manual is
+// one shared value for the whole batch, so there's no single "current
+// value" to freeze when turning Auto off. The first song's result is used
+// as that seed, same principle as the per-song freeze in the other views,
+// just picking a representative song since Manual can't vary per song.
+let printLastAutoLayout = null;
 
 function openPrintPreview(date, songIds){
   printDate = date;
@@ -4421,7 +4467,7 @@ function paintPrintPreview(){
   // searchAutoPrintLayout() -- so the manual 1/2-column toggle has nothing
   // to apply to; disable it instead of leaving a control that does nothing.
   document.getElementById('printColSeg').classList.toggle('disabled', fitMode==='auto');
-  document.querySelectorAll('#printFitSeg button').forEach(b=> b.classList.toggle('active', b.dataset.fit===fitMode));
+  document.getElementById('printFitToggle').classList.toggle('primary', fitMode==='auto');
   // In Auto, font size varies per song -- there's no single number to show
   // or adjust, so the label reads "Auto" and A-/A+ switch to Manual first
   // (see their click handlers below) rather than doing nothing.
@@ -4455,8 +4501,10 @@ function paintPrintPreview(){
   if (fitMode === 'auto'){
     const pageContentHeight = measurePrintPageContentHeight();
     const songWidth = measurePrintSongWidth();
+    printLastAutoLayout = null;
     songs.forEach(song=>{
       const layout = searchAutoPrintLayout(song, songWidth, pageContentHeight, prefs.lineSpacing, prefs.showChords, prefs.showSections);
+      if (!printLastAutoLayout) printLastAutoLayout = { fontSize: layout.fontSize, columns: layout.columns };
       renderAutoPrintSheets(root, layout);
     });
   } else {
@@ -4513,9 +4561,23 @@ document.getElementById('printColSeg').addEventListener('click', (e)=>{
   setPrintColumns(Number(btn.dataset.col));
   paintPrintPreview();
 });
-document.getElementById('printFitSeg').addEventListener('click', (e)=>{
-  const btn = e.target.closest('button[data-fit]'); if (!btn) return;
-  setPrintFitMode(btn.dataset.fit);
+// Single Auto/Manual toggle, same reasoning as the on-screen Chords/Present
+// views' own #fitToggle/#presentFitToggle: the two states are already
+// mutually exclusive, so a second "Manual" button said nothing a plain
+// on/off didn't. Turning Auto off freezes printLastAutoLayout (the first
+// displayed song's just-computed font size + column count, set by
+// paintPrintPreview()'s Auto branch) into the shared Manual values, so
+// switching off doesn't jump to a stale/unrelated size.
+document.getElementById('printFitToggle').addEventListener('click', ()=>{
+  if (getPrintFitMode() === 'auto'){
+    if (printLastAutoLayout){
+      setPrintFontSize(printLastAutoLayout.fontSize);
+      setPrintColumns(printLastAutoLayout.columns);
+    }
+    setPrintFitMode('wrap');
+  } else {
+    setPrintFitMode('auto');
+  }
   paintPrintPreview();
 });
 // A-/A+ are only meaningful for a single shared size -- clicking either

@@ -343,14 +343,59 @@ caller. Invariant 1 (`groupRowsIntoParts()` + `.print-part`'s
 wherever else starts doing paginated or columned layout — it won't happen
 automatically just by reusing `wrapRows()`.
 
-### Experimental: per-song auto font size in the A4 print view
+### Auto/Manual is one toggle button, not two, and the pattern is the same in all three fit-mode views
 
-The print toolbar has an Auto/Manual toggle (`getPrintFitMode()`/
-`setPrintFitMode()`). Its stored value is still `'auto'`/`'wrap'` — kept as
-`'wrap'` rather than renamed to `'manual'` for continuity with existing
-device-local `localStorage` data — but the UI label is `Manual`, not `Wrap`;
-don't confuse the stored string with the displayed name when reading this
-code.
+Three places in the app let you pick between an auto-computed size and a
+fixed one: the Chords view (`#fitToggle`), Present (`#presentFitToggle`),
+and the A4 print view (`#printFitToggle`). All three render as a single
+`<button class="iconbtn">` labeled `Auto`, highlighted (`.primary`) when
+on — not two segmented buttons (`[Auto][Manual]`) like earlier in this
+project's history. The two states (`fitMode` is always exactly `'auto'` or
+`'wrap'` internally, everywhere) are mutually exclusive by construction, so
+a second button for the off-state never said anything a plain on/off
+toggle didn't already say — once this was pointed out, keeping it as two
+buttons stopped making sense anywhere it appeared. The stored value stays
+`'wrap'` (not renamed to `'manual'`) for continuity with existing
+device-local `localStorage` data; only the displayed label reads `Manual`
+(print toolbar) or is simply absent (Chords/Present just show the single
+`Auto` button unhighlighted) — don't confuse the stored string with
+whatever's actually displayed when reading this code.
+
+**Turning Auto off freezes what Auto was just showing, not a stale stored
+value.** Before this, clicking directly to leave Auto (not via A−/A+) fell
+back to whatever fixed size/columns happened to be stored from a previous
+Manual session (or a never-touched default) — which could be a completely
+different size than what you were just looking at, a jarring jump. Now
+each view's toggle handler seeds the Manual value from the real, just-
+rendered Auto result before switching:
+- Chords: `lastAutoFontSize` (set in `repaint()`'s Auto branch from
+  `layoutChart()`'s own `result.size`) is written into this song's stored
+  `chords` font size.
+- Present: `presentLastAutoFontSize` (same idea, set in `paintPresent()`'s
+  `requestAnimationFrame` callback) is written into this song's stored
+  `chords` font size (only relevant with chords shown — chords-hidden is
+  always Manual/fixed already, see `filterPresentRows()`'s caller).
+- Print: `printLastAutoLayout` — Auto decides font size *and* column count
+  independently per song, but Manual is one shared value for the whole
+  batch, so there's no single unambiguous "current value" the way the
+  other two views have one song in view at a time. The **first displayed
+  song's** computed `{fontSize, columns}` is used as that seed — a
+  reasonable representative pick, not a precise one.
+
+A-/A+ continue to work exactly as before in every view (switch this song
+to Manual, seeded from whatever delta was just applied — unrelated to the
+freeze above, since an explicit delta already *is* the new value).
+
+**A related gap this surfaced and fixed in passing**: the Chords/Present
+font-size labels (`#fontSizeLabel`/`#presentFontLabel`) previously only
+ever updated from the Manual-mode bump functions, so while Auto was active
+they kept showing whatever was last stored for Manual — not the size Auto
+was actually rendering at. This meant the number on screen didn't match
+what the freeze-on-toggle-off above would capture. Both labels are now
+also updated live, right after `layoutChart()`'s Auto branch resolves (see
+`result.size` in both `repaint()` and `paintPresent()`).
+
+### Experimental: per-song auto font size in the A4 print view
 
 - **`Manual`** (the original default, unchanged behavior): one global font
   size and column count for every song in the batch, same as before this
