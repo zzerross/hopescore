@@ -395,6 +395,36 @@ what the freeze-on-toggle-off above would capture. Both labels are now
 also updated live, right after `layoutChart()`'s Auto branch resolves (see
 `result.size` in both `repaint()` and `paintPresent()`).
 
+### Printing has one entry point, not two
+
+`renderHomeView()` used to have two separate ways into the A4 print
+preview: the top-toolbar `🖨` button (`#btnPrintSetlist`, always printed
+*this date's setlist*), and a second "Print preview (A4)" button that only
+appeared in a bar beneath the library once you'd checked one or more songs
+there (independent of any setlist — e.g. to proof a batch of new/edited
+charts without staging them into a setlist first). Two buttons for
+"print," picked by which one happened to be visible, was one too many.
+
+`🖨` is now context-aware instead: if the library below has anything
+checked (`selectedIds.size`), clicking it prints that selection; otherwise
+it falls back to the date's setlist, exactly as before
+(`openPrintPreview(date, selectedIds.size ? [...selectedIds] : undefined)`
+— `openPrintPreview`'s own `songIds || null` turns that `undefined` back
+into "use the setlist"). `syncPrintSetlistBtn()` keeps the button's
+enabled state and tooltip (`Print this setlist` vs. `Print N selected
+songs`) matching whichever mode it would actually act on right now; it's
+called both from `paintSetlist()` (setlist changes) and
+`paintSelectionBar()` (library selection changes), since either can flip
+which mode that is. The library's own checkboxes, search, sort, and
+select-all are untouched — only the print *trigger* moved, from a second
+button to the existing one; the selection bar now just shows a count and a
+`Clear` button.
+
+If you add a third way to build a song list to print (e.g. a future
+"queue" — see the earlier queue discussion in this project's history), run
+it through this same `🖨` + `selectedIds`-style pattern rather than adding
+yet another print button.
+
 ### Experimental: per-song auto font size in the A4 print view
 
 - **`Manual`** (the original default, unchanged behavior): one global font

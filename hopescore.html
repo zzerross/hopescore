@@ -3057,9 +3057,11 @@ function renderHomeView(date){
 
   // Shown only while something's selected -- lets someone pick a handful
   // (or "select all" above) of songs straight from the library, independent
-  // of any setlist, and jump into the A4 print preview with just those --
-  // e.g. to proof-read a batch of new/edited charts without having to
-  // stage them into a setlist first.
+  // of any setlist, to print/proof-read without staging them into a setlist
+  // first. The actual print trigger is the same top-toolbar 🖨 button used
+  // for the setlist (see btnPrintSetlist below) -- this bar is just the
+  // "N selected / Clear" feedback and no longer carries its own print
+  // button, so there's one print entry point instead of two.
   const selectBar = document.createElement('div');
   selectBar.className = 'library-select-bar';
   selectBar.hidden = true;
@@ -3075,14 +3077,32 @@ function renderHomeView(date){
   const btnPresentHome = slot.querySelector('#btnPresentHome');
   const btnShareSetlist = slot.querySelector('#btnShareSetlist');
   const btnPrintSetlist = slot.querySelector('#btnPrintSetlist');
-  btnPrintSetlist.addEventListener('click', ()=> openPrintPreview(date));
+  // Context-aware: prints whatever's selected in the library below if
+  // anything is, otherwise falls back to this date's setlist -- same
+  // openPrintPreview() either way, just with or without an explicit song
+  // list (see its own songIds=null fallback to STATE.setlists[date]).
+  btnPrintSetlist.addEventListener('click', ()=> openPrintPreview(date, selectedIds.size ? [...selectedIds] : undefined));
+  // Keeps btnPrintSetlist's enabled state and tooltip matching whichever
+  // mode it would actually act on if clicked right now -- called from
+  // paintSetlist() (setlist changes) and paintSelectionBar() (library
+  // selection changes), since either can flip which one that is.
+  function syncPrintSetlistBtn(){
+    const setlistCount = (STATE.setlists[date] || []).length;
+    if (selectedIds.size){
+      btnPrintSetlist.disabled = false;
+      btnPrintSetlist.title = `Print ${selectedIds.size} selected song${selectedIds.size===1?'':'s'}`;
+    } else {
+      btnPrintSetlist.disabled = setlistCount===0;
+      btnPrintSetlist.title = 'Print this setlist';
+    }
+  }
 
   function paintSetlist(){
     const ids = STATE.setlists[date] || [];
     const songs = ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean);
     btnPresentHome.disabled = songs.length===0;
     btnShareSetlist.disabled = songs.length===0;
-    btnPrintSetlist.disabled = songs.length===0;
+    syncPrintSetlistBtn();
     setlistEl.innerHTML = '';
     if (songs.length===0){
       setlistEl.innerHTML = `<div class="empty-state">${editor ? 'No songs in this setlist yet -- add some from the list below.' : 'No setlist for this date yet.'}</div>`;
@@ -3184,12 +3204,11 @@ function renderHomeView(date){
   function paintSelectionBar(){
     const n = selectedIds.size;
     selectBar.hidden = n === 0;
+    syncPrintSetlistBtn();
     if (n === 0){ selectBar.innerHTML = ''; return; }
     selectBar.innerHTML = `
-      <span class="selection-count">${n} song${n===1?'':'s'} selected</span>
-      <button class="iconbtn" id="btnPrintSelected" type="button">Print preview (A4)</button>
+      <span class="selection-count">${n} song${n===1?'':'s'} selected -- use 🖨 above to print</span>
       <button class="iconbtn" id="btnClearSelection" type="button">Clear</button>`;
-    selectBar.querySelector('#btnPrintSelected').addEventListener('click', ()=> openPrintPreview(date, [...selectedIds]));
     selectBar.querySelector('#btnClearSelection').addEventListener('click', ()=>{
       selectedIds.clear();
       paintLibrary(search.value);
