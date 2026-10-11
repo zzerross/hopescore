@@ -417,8 +417,23 @@ called both from `paintSetlist()` (setlist changes) and
 `paintSelectionBar()` (library selection changes), since either can flip
 which mode that is. The library's own checkboxes, search, sort, and
 select-all are untouched — only the print *trigger* moved, from a second
-button to the existing one; the selection bar now just shows a count and a
-`Clear` button.
+button to the existing one; the selection bar now just shows a count (no
+`Clear` button — see below).
+
+**No separate "Clear" button, on purpose.** Unchecking already covers
+deselecting: one row at a time, or toggle the select-all checkbox off to
+drop every *currently visible* one at once. A dedicated Clear button was
+considered and dropped — `.library-select-bar` isn't sticky, so it scrolls
+out of view right along with the select-all checkbox above it, meaning
+Clear never actually saved a scroll-back-to-the-top trip the way a sticky
+toolbar button might have. The one case unchecking doesn't cover as
+directly: a selection built up across *several different search terms*
+(searching "a," checking some, then searching "b" and checking more —
+supported on purpose, see the comment on the select-all checkbox's own
+`change` handler) — select-all only ever acts on what's currently visible,
+so clearing a cross-search selection needs the search box cleared first,
+then select-all toggled off. Left as a real but narrow rough edge rather
+than reintroducing a button for it.
 
 If you add a third way to build a song list to print (e.g. a future
 "queue" — see the earlier queue discussion in this project's history), run

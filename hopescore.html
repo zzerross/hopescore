@@ -3201,18 +3201,19 @@ function renderHomeView(date){
     selectAllCheckbox.indeterminate = !allSelected && someSelected;
   }
 
+  // No separate "Clear" button -- unchecking covers it already (one row at
+  // a time, or toggle the select-all checkbox off to drop every currently-
+  // visible one at once), and this bar isn't sticky so Clear would scroll
+  // out of view right along with select-all anyway, no positional
+  // convenience over it. The one case this doesn't cover as directly --
+  // a selection built up across several different search terms, where
+  // select-all only ever acts on what's currently visible -- is left as a
+  // real but narrow rough edge for now.
   function paintSelectionBar(){
     const n = selectedIds.size;
     selectBar.hidden = n === 0;
     syncPrintSetlistBtn();
-    if (n === 0){ selectBar.innerHTML = ''; return; }
-    selectBar.innerHTML = `
-      <span class="selection-count">${n} song${n===1?'':'s'} selected -- use 🖨 above to print</span>
-      <button class="iconbtn" id="btnClearSelection" type="button">Clear</button>`;
-    selectBar.querySelector('#btnClearSelection').addEventListener('click', ()=>{
-      selectedIds.clear();
-      paintLibrary(search.value);
-    });
+    selectBar.textContent = n === 0 ? '' : `${n} song${n===1?'':'s'} selected -- use 🖨 above to print`;
   }
 
   function paintAll(){ paintSetlist(); paintLibrary(search.value); }
