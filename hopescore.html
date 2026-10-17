@@ -780,7 +780,20 @@ const QUAL_STRICT_RE = /^[0-9]*(?:(?:maj|min|dim|aug|sus|add|m|b5|#5|b9|#9|b13|#
 // bar lines, repeat markers and a trailing repeat count -- all of these need
 // to be accepted as part of a chord line so the whole line (and its chords)
 // gets transposed/converted, instead of falling through to plain lyric text.
-const SPECIAL_TOKENS = new Set(['N.C.','NC','%','/','-','|','||','|:',':|','||:',':||']);
+const SPECIAL_TOKENS = new Set(['N.C.','NC','%','-','|','||','|:',':|','||:',':||']);
+// A run of one or more "/"s is slash/rhythm notation for "hold the previous
+// chord this many more beats" -- "/" for one extra beat same as several
+// spaced-out ones ("A / / /"), but charts just as commonly glue them into a
+// single token per bar instead ("| A /// | D/A /// |" for a chord held the
+// rest of a 4-beat bar). A single "/" used to be the only form recognized
+// (as a literal SPECIAL_TOKENS entry) -- a glued run like "///" fell
+// through isChordToken() entirely, which failed lineIsChordLine() for the
+// whole line and silently dropped it out of chord parsing altogether (not
+// just that one token): the line was treated as plain lyric text, so
+// transpose/Nashville/key-change never touched a single chord on it. Shipped
+// for real on a song's Intro bar-notation line -- transposing the song left
+// every other line transposed but that one rendered exactly as typed.
+const MULTI_SLASH_RE = /^\/+$/;
 const REPEAT_COUNT_RE = /^x[0-9]+$/i;
 function baseChordToken(text){
   const m = text.match(CHORD_RE);
@@ -808,6 +821,7 @@ function unwrapParens(text){
 function isChordToken(text){
   if (baseChordToken(text)) return true;
   if (SPECIAL_TOKENS.has(text)) return true;
+  if (MULTI_SLASH_RE.test(text)) return true;
   if (REPEAT_COUNT_RE.test(text)) return true;
   if (repeatedChordUnit(text)) return true;
   const inner = unwrapParens(text);

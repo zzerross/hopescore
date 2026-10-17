@@ -226,6 +226,28 @@ now fixed, but worth understanding why):
   the `let STATE = loadState()` call — don't assume declaration order
   doesn't matter just because JS hoists `function` declarations (it does
   hoist those; it does *not* hoist `const` initializers).
+- **A chord line is recognized (or not) as a WHOLE — one unrecognized
+  token on it silently drops the entire line out of chord parsing**,
+  not just that token. `lineIsChordLine()` (section 2) requires *every*
+  whitespace-delimited token on a line to pass `isChordToken()` before the
+  line counts as a chord line at all; if even one token fails, the whole
+  line falls through to `lyricOnly` instead — meaning it never gets a
+  `chordTokens` array, so transpose/Nashville/key-change silently leave it
+  exactly as typed while every other line in the song changes around it.
+  This shipped for real: a bar-notation progression using glued slash-
+  rhythm notation per bar (`| A /// | D/A /// |`, "hold this chord 3 more
+  beats") had its `///` tokens fail `isChordToken()` — a single `/` was
+  recognized (a literal `SPECIAL_TOKENS` entry), but a run of more than one
+  glued together wasn't, since nothing matched that shape. The fix,
+  `MULTI_SLASH_RE` (`/^\/+$/`, replacing the old single-`/` entry since it
+  subsumes it), is deliberately a general "any run of slashes" check, not
+  specifically "exactly 3" — so `//`, `////`, etc. are covered too, not
+  just the one case that was reported. If you add another bar-notation
+  symbol, remember it has to make `isChordToken()` return `true` for
+  *every* occurrence on the line, not just render correctly once it's
+  already classified as a chord token — the two are different code paths
+  (`lineIsChordLine()` classifying vs `transposeChord()`/`toNashville()`
+  transforming), and this bug was entirely in the first one.
 - **YouTube embeds use `youtube.com`, not `youtube-nocookie.com`, on
   purpose.** The privacy-enhanced `-nocookie` domain withholds the
   viewer's own YouTube session from the embed by design, which means a
