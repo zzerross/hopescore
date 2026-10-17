@@ -248,6 +248,23 @@ now fixed, but worth understanding why):
   already classified as a chord token — the two are different code paths
   (`lineIsChordLine()` classifying vs `transposeChord()`/`toNashville()`
   transforming), and this bug was entirely in the first one.
+
+  This left one real song's seed data (`"Build my life"`) in a genuinely
+  inconsistent state, not just a display glitch: its `keySemitone` and
+  Verse/Chorus/Bridge chords had been hand-corrected to B (presumably by
+  retyping them from what the live Transposed view correctly showed,
+  since there's no "commit a transpose into the body" feature — Transpose
+  mode only ever affects the live render, see `openKeyModal()`), but
+  Intro and Interlude — both using this exact glued-slash notation, so
+  both silently frozen by the bug — had nothing correct to copy from and
+  were left in the old A-key text, declaring themselves part of a B-key
+  song while still literally reading `A`/`D/A`/`A/C#`. Retroactively
+  transposed those two lines' body text from A to B (`+2` semitones) to
+  match the rest of the song, verified against this fix's own
+  `transposeBodyText()` output rather than hand-typed. If another song
+  turns up with a similar mismatch — a declared key its body text doesn't
+  actually match on some lines — this bug (now fixed) is the likely
+  reason; check whether a bar-notation line was the one left behind.
 - **YouTube embeds use `youtube.com`, not `youtube-nocookie.com`, on
   purpose.** The privacy-enhanced `-nocookie` domain withholds the
   viewer's own YouTube session from the embed by design, which means a
