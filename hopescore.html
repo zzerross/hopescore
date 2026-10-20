@@ -3661,7 +3661,7 @@ document.addEventListener('click', (e)=>{
 async function shareSetlist(date, songs){
   if (songs.length===0) return;
   const title = `${formatDateHeading(date)} setlist`;
-  const lines = songs.map((s,i)=>`${i+1}. ${splitTitleArtist(s.title).main} - ${songKeyLabel(s)}`);
+  const lines = songs.map((s,i)=>`${i+1}. ${splitTitleArtist(s.title).main} - ${effectiveSongKeyLabel(s, date)}`);
   const url = setlistShareUrl(date);
   const combined = `${title}\n${lines.join('\n')}\n${url}`;
   // Passing title/text/url as separate fields sounds right, but plenty of
