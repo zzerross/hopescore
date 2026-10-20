@@ -84,12 +84,14 @@ one-time setup.
 ## Data model
 
 `STATE` is one in-memory object, persisted to `localStorage` on every
-change via `saveState()`. It has four top-level keys, and they are **not**
+change via `saveState()`. It has five top-level keys, and they are **not**
 treated the same way:
 
 - `STATE.songs`, `STATE.setlists` (keyed by date, `"YYYY-MM-DD"`),
-  `STATE.printPrefs` — **publishable**. These are meant to be shared across
-  the whole team, and flow through the publish pipeline described below.
+  `STATE.printPrefs`, `STATE.setlistKeyOverrides` (keyed by date, then
+  songId — see "Per-date key overrides" below) — **publishable**. These
+  are meant to be shared across the whole team, and flow through the
+  publish pipeline described below.
 - `STATE.settings` — **device-local only, never published.** Per-device
   preferences: font size, line spacing, Present theme, video player size,
   etc. Many of these are bucketed per-song-per-view (e.g. `fontSizeBySongView`
@@ -99,7 +101,7 @@ treated the same way:
 
 ### Seed data
 
-The three publishable fields are seeded from constants baked directly into
+The four publishable fields are seeded from constants baked directly into
 `hopescore.html`, inside `seedState()` (section 4, Storage), bounded by
 marker comments the publish code searches for and rewrites verbatim:
 
@@ -107,13 +109,57 @@ marker comments the publish code searches for and rewrites verbatim:
 /* SEED_SONGS_START */ ... /* SEED_SONGS_END */
 /* SEED_SETLISTS_START */ ... /* SEED_SETLISTS_END */
 /* SEED_PRINT_START */ ... /* SEED_PRINT_END */
+/* SEED_SETLIST_KEY_OVERRIDES_START */ ... /* SEED_SETLIST_KEY_OVERRIDES_END */
 ```
 
 To start your team with an empty library, replace the `seedSongs` array
 with `[]` and `seedSetlists` with `{}` inside those markers (printPrefs can
-stay as-is — it's just default print layout settings). Don't touch the
-marker comments themselves; `publishToGithub()` does a literal string
-search for them.
+stay as-is — it's just default print layout settings; `seedSetlistKeyOverrides`
+is already `{}` by default). Don't touch the marker comments themselves;
+`publishToGithub()` does a literal string search for them.
+
+### Per-date key overrides
+
+A specific date's setlist can show a song in a different key than the
+song's own registered one — e.g. the vocalist that week sings "Build my
+life" in A even though it's registered as B — without touching the song's
+own data, so every other date's setlist still uses its real key.
+
+- **Data**: `STATE.setlistKeyOverrides[date][songId] = {semitone, isMinor,
+  preferFlat}`. Publishable, merged the same way setlists themselves are
+  (`mergeSetlistKeyOverridesForPublish()`, section 9) — keyed by (date,
+  songId) rather than ordered array membership, so two editors setting
+  different songs' overrides, even for the same date, don't clobber each
+  other. Helpers near `songKeyLabel()` (section 1): `setlistKeyOverride()`,
+  `effectiveSongKey()`/`effectiveSongKeyLabel()`/`effectiveSongKeyValue()`
+  (fall back to the song's own key whenever there's no override), and
+  `setSetlistKeyOverride()` (writes one, or clears it — both on an
+  explicit reset and when an editor picks exactly the song's own key again,
+  so a no-op override never sits in published data pretending to be real).
+- **UI**: on the home view's setlist row (`paintSetlist()`, section 7), the
+  key pill shows the *effective* key (override if set, else the song's
+  own) to everyone — it's about what key is actually correct for this
+  performance, not a personal Transpose preference. Only an editor can
+  click it (`openSetlistKeyOverrideModal()`) to change or reset it; a
+  viewer still sees the result, just can't open the modal. The library
+  list's own pill (`paintLibrary()`) is intentionally untouched — it shows
+  the song's base key regardless of date, since it isn't scoped to one.
+- **Where it's applied**: `defaultSongViewPrefs(song, date)` seeds the
+  song view's and Present's per-song Transpose prefs (`songViewPrefs`) to
+  the override, pre-transposed, the first time that song is opened this
+  page-load — from the regular song view (`route.date`) or from Present
+  (`presentDate`, set by `openPresent()`'s new third argument). Since
+  `songViewPrefs` is an in-memory, per-songId (not per-date) cache that
+  already doesn't react to anything else changing mid-session either (see
+  its own declaration comment), re-opening the *same* song from a
+  *different* date later in the same page session keeps whatever was set
+  the first time rather than re-deriving a fresh default — a narrow,
+  accepted edge case, not something new introduced by this feature.
+  **Print is deliberately NOT included** — the print view always renders
+  `computeSongRows(song, 'original', null)` regardless of any transpose
+  setting, on-screen or per-date; extending that would be a bigger, separate
+  change to a view that currently has no transpose concept at all, not an
+  extension of an existing one.
 
 ### Song body text: blank lines are canonicalized on save
 
@@ -168,18 +214,21 @@ the token can publish — there's no per-user permission model beyond "has
 the shared token or not." Publishing (`publishToGithub()`, section 9):
 
 1. Fetches the current `hopescore.html` from GitHub via the Contents API.
-2. Rewrites the three `SEED_*` blocks with the local `STATE.songs` /
-   merged setlists / `STATE.printPrefs`, serialized with `JSON.stringify`.
+2. Rewrites the four `SEED_*` blocks with the local `STATE.songs` /
+   merged setlists / `STATE.printPrefs` / merged `STATE.setlistKeyOverrides`,
+   serialized with `JSON.stringify`.
 3. Commits the new file back via a `PUT` to the Contents API, with the
    editor's name stamped as the git author (the shared token's account is
    always the committer — GitHub requires that match).
 4. GitHub Pages redeploys the new `hopescore.html` automatically
    (typically under a minute).
 
-Setlists merge rather than overwrite on publish (`mergeSetlistsForPublish()`)
-so two editors building different weeks' setlists concurrently don't
-clobber each other. Songs do not merge — last publish wins for a given
-song id.
+Setlists merge rather than overwrite on publish (`mergeSetlistsForPublish()`),
+and setlist key overrides merge the same way, keyed by (date, songId)
+instead of array membership (`mergeSetlistKeyOverridesForPublish()`) — so
+two editors building different weeks' setlists, or setting different
+overrides, concurrently don't clobber each other. Songs do not merge —
+last publish wins for a given song id.
 
 ### Why "unpublished changes" detection is more involved than it looks
 
@@ -194,13 +243,14 @@ functions (section 4), **read them in full first** — this logic has been
 wrong in two genuinely subtle ways in this project's history already (both
 now fixed, but worth understanding why):
 
-- The three `*Signature()` functions (`songsSignature`, `setlistsSignature`,
-  `printPrefsSignature`) exist specifically so two differently-shaped-but-
-  equivalent objects (e.g. an old saved `printPrefs` missing a field a
-  newer version added, vs. the current default-filled shape) still compare
-  equal. If you add a new field to one of these three data shapes, make
-  sure its signature function's default-merge covers it, or old
-  local/published data will permanently miscompare against new data.
+- The four `*Signature()` functions (`songsSignature`, `setlistsSignature`,
+  `printPrefsSignature`, `setlistKeyOverridesSignature`) exist specifically
+  so two differently-shaped-but-equivalent objects (e.g. an old saved
+  `printPrefs` missing a field a newer version added, vs. the current
+  default-filled shape) still compare equal. If you add a new field to one
+  of these four data shapes, make sure its signature function's default-
+  merge covers it, or old local/published data will permanently miscompare
+  against new data.
 - `loadState()` tracks `LAST_SEEN_SEED_KEY` (and falls back to this
   device's own last-published cache, `GH_LAST_PUBLISHED_*_KEY`, ignoring
   its trust window) to distinguish a genuinely-edited local draft from one

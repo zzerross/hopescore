@@ -184,6 +184,10 @@
     display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px; font-weight:700;
     background:var(--surface); border:1px solid var(--paper-line); color:var(--muted);
   }
+  /* A setlist-row pill showing a per-date key override (see
+     setlistKeyOverride() in the script) instead of the song's own key. */
+  .pill.key-override{ border-color:var(--accent); color:var(--accent); }
+  .setlist-row .pill[data-act="key"]{ cursor:pointer; }
 
   /* ---------- home (weekly setlist + library, one page) view ---------- */
   .date-control{ position:relative; }
@@ -950,6 +954,50 @@ function songKeyLabel(song){
   return keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
 }
 
+// A specific date's setlist can show a song in a different key than the
+// song's own registered one -- e.g. the vocalist that week sings "Build
+// my life" in A even though it's registered as B -- without touching the
+// song's own data, so every other date still uses its real key.
+// STATE.setlistKeyOverrides[date][songId] = {semitone, isMinor,
+// preferFlat}, published/merged the same way setlists themselves are (see
+// mergeSetlistKeyOverridesForPublish() in the publish section). All three
+// helpers below fall back to the song's own key whenever there's no
+// override, no date given, or no entry for this particular song -- the
+// common case for every date that hasn't had one set.
+function setlistKeyOverride(date, songId){
+  return (date && STATE.setlistKeyOverrides && STATE.setlistKeyOverrides[date] && STATE.setlistKeyOverrides[date][songId]) || null;
+}
+function effectiveSongKey(song, date){
+  const ov = setlistKeyOverride(date, song.id);
+  if (ov) return { semitone: ov.semitone, isMinor: !!ov.isMinor, preferFlat: !!ov.preferFlat };
+  return { semitone: song.keySemitone, isMinor: !!song.keyIsMinor, preferFlat: songBaseKey(song).preferFlat };
+}
+function effectiveSongKeyLabel(song, date){
+  const k = effectiveSongKey(song, date);
+  return keyLabel(k.semitone, k.isMinor, k.preferFlat);
+}
+// Same "semitone:isMinor:preferFlat" shape songKeyValue() returns -- used
+// as the Transpose dropdown's target whenever a setlist override applies,
+// so opening the song from that setlist starts already-transposed to the
+// override instead of the song's own key.
+function effectiveSongKeyValue(song, date){
+  const k = effectiveSongKey(song, date);
+  return `${k.semitone}:${k.isMinor?1:0}:${k.preferFlat?1:0}`;
+}
+// Writes or clears this date's override for one song -- clearing (value
+// null) both when an editor explicitly resets it and when they pick
+// exactly the song's own key again, so a no-op override is never left
+// sitting in published data pretending to be a real one.
+function setSetlistKeyOverride(date, songId, value){
+  if (value){
+    STATE.setlistKeyOverrides[date] = STATE.setlistKeyOverrides[date] || {};
+    STATE.setlistKeyOverrides[date][songId] = value;
+  } else if (STATE.setlistKeyOverrides[date]){
+    delete STATE.setlistKeyOverrides[date][songId];
+    if (Object.keys(STATE.setlistKeyOverrides[date]).length === 0) delete STATE.setlistKeyOverrides[date];
+  }
+}
+
 /* ---- date helpers (for the weekly setlist / home view) ---- */
 // Function declarations (not const) so they're safely callable from code
 // that runs at the top of the script, before this point in the file has
@@ -1474,6 +1522,32 @@ function setlistsSignature(setlists){
   return JSON.stringify(dates.map(d => [d, setlists[d]]));
 }
 
+// Per-date key overrides (see setlistKeyOverride() etc. above) are
+// publishable/mergeable the same way setlists themselves are -- same
+// get/set/baseline trio, same sorted-keys signature trick, just one level
+// deeper (date -> songId) so object key insertion order never causes two
+// equivalent override sets to miscompare.
+const GH_LAST_PUBLISHED_KEY_OVERRIDES_KEY = 'hopescore_gh_last_published_key_overrides_v1';
+function getLastPublishedSetlistKeyOverrides(){
+  try{
+    const raw = localStorage.getItem(GH_LAST_PUBLISHED_KEY_OVERRIDES_KEY);
+    if (!raw) return null;
+    const { overrides, ts } = JSON.parse(raw);
+    if (Date.now() - ts > GH_LAST_PUBLISHED_TRUST_MS) return null;
+    return overrides;
+  }catch(e){ return null; }
+}
+function setLastPublishedSetlistKeyOverrides(overrides){
+  localStorage.setItem(GH_LAST_PUBLISHED_KEY_OVERRIDES_KEY, JSON.stringify({ overrides, ts: Date.now() }));
+}
+function publishedBaselineSetlistKeyOverrides(){
+  return getLastPublishedSetlistKeyOverrides() || seedState().setlistKeyOverrides;
+}
+function setlistKeyOverridesSignature(overrides){
+  const dates = Object.keys(overrides||{}).filter(d => Object.keys(overrides[d]||{}).length).sort();
+  return JSON.stringify(dates.map(d => [d, Object.keys(overrides[d]).sort().map(id => [id, overrides[d][id]])]));
+}
+
 // Print layout (font size / columns / line spacing) is a *paper-format*
 // preference, not a screen one -- kept in its own STATE.printPrefs rather
 // than folded into STATE.settings specifically so it can be published the
@@ -1512,7 +1586,8 @@ function hasUnpublishedChanges(){
   if (!isEditorLoggedIn()) return false;
   return songsSignature(STATE.songs) !== songsSignature(publishedBaselineSongs())
     || setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())
-    || printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs());
+    || printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())
+    || setlistKeyOverridesSignature(STATE.setlistKeyOverrides) !== setlistKeyOverridesSignature(publishedBaselineSetlistKeyOverrides());
 }
 // A short human summary of what's unpublished, for the banner -- e.g.
 // "2 songs added, setlist updated" -- so an editor doesn't have to guess
@@ -1526,6 +1601,7 @@ function unpublishedChangesSummary(){
   if (deleted) parts.push(`${deleted} song${deleted>1?'s':''} deleted`);
   if (setlistsSignature(STATE.setlists) !== setlistsSignature(publishedBaselineSetlists())) parts.push('setlist updated');
   if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())) parts.push('print settings updated');
+  if (setlistKeyOverridesSignature(STATE.setlistKeyOverrides) !== setlistKeyOverridesSignature(publishedBaselineSetlistKeyOverrides())) parts.push('key override updated');
   return parts.length ? parts.join(', ') : 'local changes';
 }
 // Breaks the unpublished diff into individual, itemized lines -- one per
@@ -1573,6 +1649,14 @@ function unpublishedChangeItems(){
   if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())){
     items.push({ kind:'print', type:'edit', text:'Print layout changed' });
   }
+  // Not itemized per (date, song) the way setlist membership is -- key
+  // overrides are expected to be rare and one-off, so a single revert-
+  // everything line (same treatment as print layout just above) is enough;
+  // see applyChangeSelection()'s 'keyOverride' branch for what discarding
+  // this line actually does.
+  if (setlistKeyOverridesSignature(STATE.setlistKeyOverrides) !== setlistKeyOverridesSignature(publishedBaselineSetlistKeyOverrides())){
+    items.push({ kind:'keyOverride', type:'edit', text:'Setlist key overrides changed' });
+  }
   return items;
 }
 // Applies a Changes-modal selection: items whose index is in `discardedIdx`
@@ -1611,6 +1695,8 @@ function applyChangeSelection(items, discardedIdx){
       }
     } else if (it.kind === 'print'){
       STATE.printPrefs = publishedBaselinePrintPrefs();
+    } else if (it.kind === 'keyOverride'){
+      STATE.setlistKeyOverrides = publishedBaselineSetlistKeyOverrides();
     }
   });
   saveState();
@@ -1672,6 +1758,9 @@ function loadState(){
       if (!setlists){
         setlists = (saved.setlist && saved.setlist.length) ? { [nearestSundayISO()]: saved.setlist } : {};
       }
+      // No legacy shape to migrate here (this field postdates dated
+      // setlists), so a device that's never saved one just gets {}.
+      const overrides = saved.setlistKeyOverrides || {};
       // An editor (this device has a publish token configured) keeps their
       // own local song/setlist/print edits across reloads, so a draft
       // survives until they hit Publish -- but only a field this editor
@@ -1695,19 +1784,23 @@ function loadState(){
           songs: (() => { const s = getEverPublishedRaw(GH_LAST_PUBLISHED_KEY, 'songs'); return s ? songsSignature(s) : null; })(),
           setlists: (() => { const s = getEverPublishedRaw(GH_LAST_PUBLISHED_SETLISTS_KEY, 'setlists'); return s ? setlistsSignature(s) : null; })(),
           printPrefs: (() => { const p = getEverPublishedRaw(GH_LAST_PUBLISHED_PRINT_KEY, 'printPrefs'); return p ? printPrefsSignature(p) : null; })(),
+          setlistKeyOverrides: (() => { const o = getEverPublishedRaw(GH_LAST_PUBLISHED_KEY_OVERRIDES_KEY, 'overrides'); return o ? setlistKeyOverridesSignature(o) : null; })(),
         };
         const songsUnedited = reference.songs && songsSignature(saved.songs || fresh.songs) === reference.songs;
         const setlistsUnedited = reference.setlists && setlistsSignature(setlists) === reference.setlists;
         const printPrefsUnedited = reference.printPrefs && printPrefsSignature(saved.printPrefs || fresh.printPrefs) === reference.printPrefs;
+        const overridesUnedited = reference.setlistKeyOverrides && setlistKeyOverridesSignature(overrides) === reference.setlistKeyOverrides;
         setLastSeenSeedSig({
           songs: songsSignature(fresh.songs),
           setlists: setlistsSignature(fresh.setlists),
           printPrefs: printPrefsSignature(fresh.printPrefs),
+          setlistKeyOverrides: setlistKeyOverridesSignature(fresh.setlistKeyOverrides),
         });
         const result = {
           songs: songsUnedited ? fresh.songs : (saved.songs || fresh.songs),
           setlists: setlistsUnedited ? fresh.setlists : setlists,
           printPrefs: printPrefsUnedited ? fresh.printPrefs : (saved.printPrefs || fresh.printPrefs),
+          setlistKeyOverrides: overridesUnedited ? fresh.setlistKeyOverrides : overrides,
           settings: saved.settings || {},
         };
         // Adopting fresh data for an unedited field only fixes STATE for
@@ -1720,12 +1813,12 @@ function loadState(){
         // assigned yet at this point -- this call is before `let STATE =
         // loadState()` runs -- so this writes `result` directly rather
         // than going through the usual saveState(), which reads STATE.)
-        if (songsUnedited || setlistsUnedited || printPrefsUnedited){
+        if (songsUnedited || setlistsUnedited || printPrefsUnedited || overridesUnedited){
           localStorage.setItem(STORE_KEY, JSON.stringify(result));
         }
         return result;
       }
-      return { songs: seedState().songs, setlists: seedState().setlists, printPrefs: seedState().printPrefs, settings: saved.settings || {} };
+      return { songs: seedState().songs, setlists: seedState().setlists, printPrefs: seedState().printPrefs, setlistKeyOverrides: seedState().setlistKeyOverrides, settings: saved.settings || {} };
     }
   }catch(e){}
   return seedState();
@@ -2241,6 +2334,9 @@ function seedState(){
   "showSections": true
 };
   /* SEED_PRINT_END */
+  /* SEED_SETLIST_KEY_OVERRIDES_START */
+  const seedSetlistKeyOverrides = {};
+  /* SEED_SETLIST_KEY_OVERRIDES_END */
   // Only fills in createdAt/updatedAt when a song doesn't already have them
   // (true for every song published before these fields existed, or a
   // locally-created song that hasn't been through seedState() yet) --
@@ -2255,6 +2351,7 @@ function seedState(){
     songs: seedSongs,
     setlists: seedSetlists,
     printPrefs: seedPrintPrefs,
+    setlistKeyOverrides: seedSetlistKeyOverrides,
     settings: {},
   };
 }
@@ -3144,11 +3241,12 @@ function renderTopbar(){
 // itself compares against, or it can leave something (print layout, since
 // it has no undo of its own) still flagged unpublished afterward.
 async function discardAllLocalChanges(){
-  const ok = await confirmModal('Discard local changes', "Replace your local songs, setlist, and print layout with the currently published version? This can't be undone.", 'Discard');
+  const ok = await confirmModal('Discard local changes', "Replace your local songs, setlist, print layout, and setlist key overrides with the currently published version? This can't be undone.", 'Discard');
   if (!ok) return false;
   STATE.songs = publishedBaselineSongs();
   STATE.setlists = publishedBaselineSetlists();
   STATE.printPrefs = publishedBaselinePrintPrefs();
+  STATE.setlistKeyOverrides = publishedBaselineSetlistKeyOverrides();
   saveState();
   toast('Discarded -- back to the published version');
   return true;
@@ -3284,11 +3382,20 @@ function renderHomeView(date){
     songs.forEach((s,i)=>{
       const row = document.createElement('div');
       row.className = editor ? 'song-row setlist-row editable' : 'song-row setlist-row';
+      // The pill shows the EFFECTIVE key for this date (the override if one's
+      // set, else the song's own) -- visible to everyone, since it's about
+      // what key is actually correct for this performance, not a personal
+      // Transpose preference. Only an editor can click it to change it; a
+      // viewer still sees the result, just can't open the modal.
+      const override = setlistKeyOverride(date, s.id);
+      const keyPillTitle = override
+        ? `Key overridden for this date -- the song's own key is ${songKeyLabel(s)}.${editor ? ' Click to change.' : ''}`
+        : (editor ? 'Click to set a different key just for this date' : '');
       row.innerHTML = `
         <span class="song-badge assigned">${i+1}</span>
         <span class="song-video-icon" title="${songHasVideo(s)?'Has a reference video':''}">${songHasVideo(s)?'📺':''}</span>
         <div class="song-title">${escapeHtml(splitTitleArtist(s.title).main)}</div>
-        <span class="pill">${escapeHtml(songKeyLabel(s))}</span>
+        <span class="pill${override?' key-override':''}" ${editor?'data-act="key"':''} title="${escapeHtml(keyPillTitle)}">${escapeHtml(effectiveSongKeyLabel(s, date))}</span>
         ${editor ? `<div class="row-controls">
           <button data-act="up" ${i===0?'disabled':''} title="Move up">↑</button>
           <button data-act="down" ${i===songs.length-1?'disabled':''} title="Move down">↓</button>
@@ -3299,6 +3406,10 @@ function renderHomeView(date){
         go({view:'song', songId:s.id, date});
       });
       if (editor){
+        row.querySelector('[data-act="key"]').addEventListener('click', (e)=>{
+          e.stopPropagation();
+          openSetlistKeyOverrideModal(s);
+        });
         row.querySelector('[data-act="up"]').addEventListener('click', (e)=>{
           e.stopPropagation();
           const list = STATE.setlists[date]; [list[i-1],list[i]] = [list[i],list[i-1]];
@@ -3317,6 +3428,40 @@ function renderHomeView(date){
       }
       setlistEl.appendChild(row);
     });
+  }
+  // Editor-only: lets this date's setlist show a song in a different key
+  // than its own registered one (e.g. a vocalist needs it a step down just
+  // for this week) without touching the song's own data -- see
+  // setlistKeyOverride() etc. near songKeyLabel() for the data model, and
+  // defaultSongViewPrefs()/paintPresent() for where the result is actually
+  // applied when opening the song.
+  function openSetlistKeyOverrideModal(song){
+    const current = effectiveSongKey(song, date);
+    const currentValue = `${current.semitone}:${current.isMinor?1:0}:${current.preferFlat?1:0}`;
+    const hasOverride = !!setlistKeyOverride(date, song.id);
+    function save(value){
+      setSetlistKeyOverride(date, song.id, value);
+      closeModal();
+      saveState(); paintAll();
+    }
+    modalBox.style.maxWidth = '340px';
+    modalBox.innerHTML = `
+      <h3>Key for this date</h3>
+      <p class="msg">${escapeHtml(splitTitleArtist(song.title).main)} is registered in ${escapeHtml(songKeyLabel(song))}. Pick a different key to use just for the ${escapeHtml(formatDateHeading(date))} setlist.</p>
+      <select id="modalKeySel" style="width:100%;margin-top:12px;padding:9px 10px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);">${keyOptionsHTML(currentValue)}</select>
+      <div class="modal-actions">
+        ${hasOverride ? `<button class="iconbtn" id="modalReset">Reset to ${escapeHtml(songKeyLabel(song))}</button>` : ''}
+        <button class="iconbtn primary" id="modalOk">Save</button>
+      </div>`;
+    modalBackdrop.classList.add('open');
+    modalBox.querySelector('#modalOk').addEventListener('click', ()=>{
+      const [ks, km, pf] = modalBox.querySelector('#modalKeySel').value.split(':').map(Number);
+      const isSongsOwnKey = ks===song.keySemitone && !!km===!!song.keyIsMinor;
+      save(isSongsOwnKey ? null : { semitone: ks, isMinor: !!km, preferFlat: !!pf });
+    });
+    if (hasOverride){
+      modalBox.querySelector('#modalReset').addEventListener('click', ()=> save(null));
+    }
   }
 
   function paintLibrary(filter){
@@ -3431,7 +3576,7 @@ function renderHomeView(date){
     paintLibrary(search.value);
   });
 
-  btnPresentHome.addEventListener('click', ()=> openPresent(STATE.setlists[date] || [], 0));
+  btnPresentHome.addEventListener('click', ()=> openPresent(STATE.setlists[date] || [], 0, date));
   btnShareSetlist.addEventListener('click', ()=>{
     const ids = STATE.setlists[date] || [];
     shareSetlist(date, ids.map(id=>STATE.songs.find(s=>s.id===id)).filter(Boolean));
@@ -3772,13 +3917,33 @@ function renderEditView(songId){
 }
 
 /* ---- song view ---- */
+// What a song's view prefs should start at the first time it's opened this
+// page-load -- 'original' at the song's own key normally, or pre-
+// transposed to this date's setlist override when one's set (see
+// setlistKeyOverride() etc.), so opening the song from that setlist
+// already shows the right key instead of making everyone remember to
+// switch Transpose mode by hand every week. Only applies to this lazy-init
+// moment -- songViewPrefs itself is an in-memory, per-songId (not per-
+// date) cache that survives the rest of the page session, so re-opening
+// the SAME song from a DIFFERENT date later this session keeps whatever
+// was set the first time rather than re-deriving a new default; an
+// accepted, narrow edge case rather than something new here (the cache
+// already doesn't react to the song's own key changing mid-session either).
+function defaultSongViewPrefs(song, date){
+  const overrideValue = effectiveSongKeyValue(song, date);
+  const overridden = overrideValue !== songKeyValue(song);
+  return {
+    mode: overridden ? 'transposed' : 'original',
+    target: overrideValue,
+    columns: getDefaultColumns(),
+    fitMode: getDefaultFitMode(),
+  };
+}
 let songViewPrefs = {}; // per-song: {mode, target, columns, fitMode, fontSize}
 function renderSongView(songId){
   const song = STATE.songs.find(s=>s.id===songId);
   if (!song){ go({view:'home', date: nearestSundayISO()}); return; }
-  const prefs = songViewPrefs[songId] || (songViewPrefs[songId] = {
-    mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()
-  });
+  const prefs = songViewPrefs[songId] || (songViewPrefs[songId] = defaultSongViewPrefs(song, route.date));
   const {main: titleMain, artist: titleArtist} = splitTitleArtist(song.title);
   function keyBadgeText(){
     if (prefs.mode === 'nashville') return '1-7';
@@ -3926,9 +4091,10 @@ function renderSongView(songId){
 
   slot.querySelector('#backBtn').addEventListener('click', ()=> go({view:'home', date: route.date || nearestSundayISO()}));
   slot.querySelector('#presentOne').addEventListener('click', ()=>{
-    const ids = STATE.setlists[route.date || nearestSundayISO()] || [];
+    const presentForDate = route.date || nearestSundayISO();
+    const ids = STATE.setlists[presentForDate] || [];
     const idx = ids.indexOf(song.id);
-    openPresent(idx===-1? [song.id] : ids, idx===-1?0:idx);
+    openPresent(idx===-1? [song.id] : ids, idx===-1?0:idx, presentForDate);
   });
   slot.querySelector('#keyBadgeBtn').addEventListener('click', openKeyModal);
   if (isEditorLoggedIn()){
@@ -4101,16 +4267,22 @@ viewRoot.addEventListener('touchend', (e)=>{
 const presentEl = document.getElementById('present');
 let presentQueue = [];
 let presentIdx = 0;
+// Which date's setlist this Present session was opened from, if any --
+// read by defaultSongViewPrefs() (via paintPresent() etc.) so a song that
+// has a setlist key override for this date opens already-transposed to
+// it, same as the regular song view does with route.date.
+let presentDate = null;
 // Set by paintPresent() whenever it actually renders in Auto mode, to
 // whatever size that render settled on -- read by the Auto/Manual toggle so
 // turning Auto off freezes the size just shown instead of jumping to
 // whatever fixed size happened to be stored from before.
 let presentLastAutoFontSize = null;
 
-function openPresent(songIds, startIdx){
+function openPresent(songIds, startIdx, date){
   if (!songIds || songIds.length===0){ toast('The setlist is empty'); return; }
   presentQueue = songIds;
   presentIdx = startIdx||0;
+  presentDate = date || null;
   presentEl.classList.add('open');
   document.body.style.overflow='hidden';
   paintPresent();
@@ -4156,7 +4328,7 @@ function paintPresent(){
   document.getElementById('presentFontLabel').textContent = getFontSize(fontView, song.id)+'px';
   document.getElementById('presentSpacingLabel').textContent = getLineSpacing(fontView, song.id).toFixed(2)+'x';
 
-  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
+  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = defaultSongViewPrefs(song, presentDate));
   // Same column-count / fit-mode controls as the regular song view, mirrored
   // here now that the toolbar has a hide button -- no reason not to offer
   // the same layout controls in Present. They only visibly change anything
@@ -4205,7 +4377,7 @@ function bumpPresentFontSize(delta){
   const showChords = getPresentShowChords();
   const fontView = showChords ? 'chords' : 'prompter';
   if (showChords){
-    const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
+    const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = defaultSongViewPrefs(song, presentDate));
     if (prefs.fitMode !== 'wrap'){ prefs.fitMode = 'wrap'; setDefaultFitMode('wrap'); }
   }
   setFontSize(fontView, song.id, getFontSize(fontView, song.id)+delta);
@@ -4243,7 +4415,7 @@ document.getElementById('presentColSeg').addEventListener('click', (e)=>{
   const btn = e.target.closest('button[data-col]'); if (!btn) return;
   const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
   if (!song) return;
-  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
+  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = defaultSongViewPrefs(song, presentDate));
   prefs.columns = Number(btn.dataset.col);
   setDefaultColumns(prefs.columns);
   paintPresent();
@@ -4257,7 +4429,7 @@ document.getElementById('presentColSeg').addEventListener('click', (e)=>{
 document.getElementById('presentFitToggle').addEventListener('click', ()=>{
   const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
   if (!song) return;
-  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = {mode:'original', target: songKeyValue(song), columns: getDefaultColumns(), fitMode: getDefaultFitMode()});
+  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = defaultSongViewPrefs(song, presentDate));
   if (prefs.fitMode !== 'wrap'){
     if (presentLastAutoFontSize != null && getPresentShowChords()){
       setFontSize('chords', song.id, presentLastAutoFontSize);
@@ -4924,6 +5096,51 @@ function mergeSetlistsForPublish(serverSetlists){
   return merged;
 }
 
+// Same marker-search approach as extractSeedSetlistsFromText() above --
+// reads whatever key-override block is currently live on GitHub so
+// publishing can merge against it instead of blindly overwriting it.
+function extractSeedSetlistKeyOverridesFromText(text){
+  const startMarker = '/* SEED_SETLIST_KEY_OVERRIDES_START */';
+  const endMarker = '/* SEED_SETLIST_KEY_OVERRIDES_END */';
+  const startIdx = text.indexOf(startMarker);
+  const endIdx = text.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return null;
+  const block = text.slice(startIdx + startMarker.length, endIdx);
+  const m = block.match(/const seedSetlistKeyOverrides\s*=\s*([\s\S]*?);\s*$/);
+  if (!m) return null;
+  try{ return JSON.parse(m[1]); }catch(e){ return null; }
+}
+// Same add/remove-relative-to-baseline merge mergeSetlistsForPublish()
+// uses, just keyed by songId within each date instead of ordered array
+// membership (an override has no ordering to preserve): for each (date,
+// songId), this editor's own local change since their last-known-
+// published baseline wins; anything they never touched keeps whatever's
+// actually live on GitHub right now -- so two editors setting different
+// songs' overrides, even for the same date, don't clobber each other.
+function mergeSetlistKeyOverridesForPublish(serverOverrides){
+  const baseline = publishedBaselineSetlistKeyOverrides();
+  const dates = new Set([
+    ...Object.keys(serverOverrides||{}),
+    ...Object.keys(STATE.setlistKeyOverrides||{}),
+    ...Object.keys(baseline||{}),
+  ]);
+  const merged = {};
+  for (const date of dates){
+    const server = (serverOverrides && serverOverrides[date]) || {};
+    const local = (STATE.setlistKeyOverrides && STATE.setlistKeyOverrides[date]) || {};
+    const base = (baseline && baseline[date]) || {};
+    const songIds = new Set([...Object.keys(server), ...Object.keys(local), ...Object.keys(base)]);
+    const dateOut = {};
+    for (const songId of songIds){
+      const localChanged = JSON.stringify(local[songId]||null) !== JSON.stringify(base[songId]||null);
+      const value = localChanged ? local[songId] : server[songId];
+      if (value) dateOut[songId] = value;
+    }
+    if (Object.keys(dateOut).length) merged[date] = dateOut;
+  }
+  return merged;
+}
+
 async function publishToGithub(){
   const token = getGhToken();
   const editorName = getGhEditorName();
@@ -5022,6 +5239,18 @@ async function publishToGithub(){
     const pBlock = `${pStartMarker}\n  const seedPrintPrefs = ${JSON.stringify(getPrintPrefs(), null, 2)};\n  ${pEndMarker}`;
     newText = newText.slice(0, pStartIdx) + pBlock + newText.slice(pEndIdx + pEndMarker.length);
 
+    const serverOverrides = extractSeedSetlistKeyOverridesFromText(currentText);
+    if (serverOverrides === null){
+      throw new Error('Could not find the setlist key-override data section in the file on GitHub');
+    }
+    const mergedOverrides = mergeSetlistKeyOverridesForPublish(serverOverrides);
+    const koStartMarker = '/* SEED_SETLIST_KEY_OVERRIDES_START */';
+    const koEndMarker = '/* SEED_SETLIST_KEY_OVERRIDES_END */';
+    const koStartIdx = newText.indexOf(koStartMarker);
+    const koEndIdx = newText.indexOf(koEndMarker);
+    const koBlock = `${koStartMarker}\n  const seedSetlistKeyOverrides = ${JSON.stringify(mergedOverrides, null, 2)};\n  ${koEndMarker}`;
+    newText = newText.slice(0, koStartIdx) + koBlock + newText.slice(koEndIdx + koEndMarker.length);
+
     // committer stays whoever the shared token belongs to (GitHub requires
     // that to match the authenticated account); author is the actual editor,
     // stamped by name only -- a made-up but stable local email keeps commits
@@ -5052,10 +5281,12 @@ async function publishToGithub(){
     setLastPublishedSongs(STATE.songs);
     setLastPublishedSetlists(mergedSetlists);
     setLastPublishedPrintPrefs(getPrintPrefs());
+    setLastPublishedSetlistKeyOverrides(mergedOverrides);
     // Adopt the merged result locally too, so this editor immediately sees
     // whatever anyone else had already published (e.g. another editor's
     // songs on the same date's setlist) rather than just their own picks.
     STATE.setlists = mergedSetlists;
+    STATE.setlistKeyOverrides = mergedOverrides;
     saveState();
     toast('Published! Live in about a minute.');
     render();
