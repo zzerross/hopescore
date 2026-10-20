@@ -265,6 +265,64 @@ now fixed, but worth understanding why):
   turns up with a similar mismatch — a declared key its body text doesn't
   actually match on some lines — this bug (now fixed) is the likely
   reason; check whether a bar-notation line was the one left behind.
+
+  A full-library audit after that fix (every line that currently reads as
+  `lyricOnly` but is mostly chord-shaped tokens — the exact symptom this
+  whole class of bug produces — flagged for a manual look) turned up a
+  second, structurally different variant across 5 more real songs: a
+  section name glued to more content on the *same* line, either a repeat
+  count in a shape `SECTION_WORD_RE` doesn't parse as a suffix (`"INTRO
+  (x4)"` parenthesized, `"[BRIDGE] x2"` after the closing bracket — neither
+  fits that regex's suffix group) or a whole bar-notation progression
+  written directly after the section name (`"[INTRO] C - Am - G - Em - Am
+  – D"`). Naively extending `SECTION_WORD_RE` to match these whole lines
+  would have *discarded* the chord progression instead of fixing its
+  transposition — the full line becoming one section block drops
+  everything after the recognized header, same loss as before just
+  relocated. Fixed instead with `SECTION_WORD_PREFIX_RE`/
+  `splitLeadingSectionLabel()`: match just the leading header, and only
+  split it off (into a `section` block + the remainder re-processed as its
+  own line) when that remainder *itself* passes `lineIsChordLine()` — this
+  gate is what keeps it from false-positivng on an ordinary lyric line that
+  happens to start with one of these words ("Repeat after me...", "Ending
+  up right here..."), since real lyric text after the "header" essentially
+  never also happens to look like a valid chord line.
+
+  Wiring this in surfaced one more bug in the *existing* pair-vs-chordOnly
+  lookahead: when deciding whether to pair a chord line with the next line
+  as its lyric, that check only consulted `detectSectionLabel()` (the
+  whole-line case) to rule out a next line being a lyric — not
+  `splitLeadingSectionLabel()`. So a next line like `"BRIDGE (x2)"` (which
+  fails the whole-line check but is a section via the new split path) got
+  swallowed as the *previous* chord line's "lyric" instead of starting its
+  own section on its own next turn through the loop. Shipped for real:
+  Lion and the Lamb's own Interlude chord line ended up paired with the
+  literal text "BRIDGE (x2)" as if it were a lyric. Fixed by having that
+  lookahead check `splitLeadingSectionLabel()` too, not just
+  `detectSectionLabel()`. If you add a third way a line can turn out to
+  "actually be a section, just not in a form that matches on the whole
+  line," make sure *this* lookahead knows about it as well — it's a second,
+  easy-to-forget place that has to independently agree.
+
+  Three more unrelated chart-notation gaps turned up in the same audit, in
+  one song (`MAGNIFICENT`): an en dash (`"–"`) used as a chord separator in
+  one spot of an otherwise plain-hyphen progression — almost certainly a
+  word-processor autocorrect artifact — now recognized alongside `-` in
+  `SPECIAL_TOKENS`; chords glued together with `-` and no spaces
+  (`"G-D/F#-Em"`, three chords in quick succession) — `splitFusedChordToken()`
+  (previously hard-coded to split only on `.`) now also tries `-`, safe
+  because `CHORD_RE`'s own quality character class never includes a literal
+  `-`, so a hyphen inside a token is never part of one chord's own spelling
+  (confirmed, same reasoning `.` already relied on); and a trailing `*`
+  suffix on some chords (`"C*"`, `"G*"`) of unconfirmed meaning — recognized
+  and transposed as the chord underneath with the `*` carried along on
+  display (`unwrapAsterisk()`, same shape as `unwrapParens()`). That last
+  one is the least certain of the three: nobody on the team had confirmed
+  what the `*` is actually meant to convey at the time this shipped — if it
+  turns out to mean something that *shouldn't* travel with the transposed
+  root (e.g. referencing a footnote by position rather than describing the
+  chord itself — though nothing elsewhere in this app has a footnote/
+  annotation system to check that against), this would need revisiting.
 - **YouTube embeds use `youtube.com`, not `youtube-nocookie.com`, on
   purpose.** The privacy-enhanced `-nocookie` domain withholds the
   viewer's own YouTube session from the embed by design, which means a
@@ -277,6 +335,34 @@ now fixed, but worth understanding why):
   playing inline (confirmed on a real Android device, not a browser
   quirk you can work around with CSS). `VIDEO_SIZES` encodes this — don't
   add a smaller preset without retesting on a real phone.
+- **`route.date`'s "this week" default is only ever computed once, when the
+  script first runs** — `let route = {view:'home', date: dateFromUrl() ||
+  nearestSundayISO()}`, evaluated exactly once at load time, never again
+  afterward. Every other path that falls back to a default re-reads
+  `route.date` (already set, so `route.date || nearestSundayISO()` never
+  actually re-triggers the fallback) rather than recomputing
+  `nearestSundayISO()` fresh. On a tab kept open across midnight — very
+  plausible for a bookmarked/PWA mobile tab left open for days without a
+  real reload — the home view just keeps showing whatever Sunday was
+  "nearest" back when the page first loaded, even once that's fallen
+  behind the real current week. Reported for real: still showing last
+  Sunday's setlist two days after that Sunday had passed. Fixed with
+  `refreshStaleHomeDateIfNeeded()`, checked on regaining visibility/focus
+  (`visibilitychange`/`focus` listeners near `route`'s own declaration) —
+  deliberately NOT a timer, and deliberately gated two ways: (a) only acts
+  when the calendar day has genuinely changed since last checked
+  (`lastKnownTodayISO`), since visibility/focus events fire far more often
+  than that — every app switch or screen lock on mobile — and (b) only
+  advances `route.date` when it's *already in the past relative to today*
+  (`route.date < today`), not merely "earlier than the freshly computed
+  nearest Sunday" — a date you deliberately navigated to a few days ahead
+  (a setlist staged for a Saturday, or any date beyond this week) would
+  satisfy that weaker check too, well before it's actually stale, and get
+  silently yanked back to "this week" out from under you. `route.date <
+  today` is the strictly safer condition precisely because
+  `nearestSundayISO()` is always `>= today` by construction — this never
+  touches a date that's still current or upcoming, only one that can't be
+  anything other than a stale leftover default.
 - **This is a single shared GitHub token model**, not per-user auth.
   Don't build anything that assumes a song or setlist's "owner" can be
   reliably identified beyond the free-text editor name stamped on the git

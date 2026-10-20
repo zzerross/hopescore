@@ -780,7 +780,12 @@ const QUAL_STRICT_RE = /^[0-9]*(?:(?:maj|min|dim|aug|sus|add|m|b5|#5|b9|#9|b13|#
 // bar lines, repeat markers and a trailing repeat count -- all of these need
 // to be accepted as part of a chord line so the whole line (and its chords)
 // gets transposed/converted, instead of falling through to plain lyric text.
-const SPECIAL_TOKENS = new Set(['N.C.','NC','%','-','|','||','|:',':|','||:',':||']);
+// En/em dash ("–"/"—") alongside the plain hyphen -- a chart pasted from a
+// word processor commonly autocorrects a typed "-" between chords into one
+// of these look-alike dashes (seen for real: "C - Am - G - Em - Am – D",
+// every separator a plain "-" except the last, an en dash). Same role as
+// "-", just a different Unicode character for it.
+const SPECIAL_TOKENS = new Set(['N.C.','NC','%','-','–','—','|','||','|:',':|','||:',':||']);
 // A run of one or more "/"s is slash/rhythm notation for "hold the previous
 // chord this many more beats" -- "/" for one extra beat same as several
 // spaced-out ones ("A / / /"), but charts just as commonly glue them into a
@@ -818,6 +823,19 @@ function repeatedChordUnit(text){
 function unwrapParens(text){
   return (text.length > 2 && text[0]==='(' && text[text.length-1]===')') ? text.slice(1,-1) : null;
 }
+// A chord with a trailing "*" ("C*"), seen in one real chart with no
+// confirmed meaning yet (team still checking the original source -- could
+// be a footnote marker, a voicing variant, or just noise from whoever
+// transcribed it). Recognized/transposed as the chord underneath with the
+// "*" carried along on display, same principle as unwrapParens() above --
+// if it turns out to mean something that *shouldn't* travel with the
+// transposed root (e.g. it's actually referencing a footnote by position
+// rather than describing the chord itself), this would need revisiting;
+// there's no footnote/annotation system elsewhere in this app to cross-
+// check it against.
+function unwrapAsterisk(text){
+  return (text.length > 1 && text[text.length-1]==='*') ? text.slice(0,-1) : null;
+}
 function isChordToken(text){
   if (baseChordToken(text)) return true;
   if (SPECIAL_TOKENS.has(text)) return true;
@@ -825,12 +843,16 @@ function isChordToken(text){
   if (REPEAT_COUNT_RE.test(text)) return true;
   if (repeatedChordUnit(text)) return true;
   const inner = unwrapParens(text);
-  return inner !== null && isChordToken(inner);
+  if (inner !== null) return isChordToken(inner);
+  const starInner = unwrapAsterisk(text);
+  return starInner !== null && isChordToken(starInner);
 }
 
 function transposeChord(text, shift, preferFlat){
   const inner = unwrapParens(text);
   if (inner !== null) return '(' + transposeChord(inner, shift, preferFlat) + ')';
+  const starInner = unwrapAsterisk(text);
+  if (starInner !== null) return transposeChord(starInner, shift, preferFlat) + '*';
   const rep = repeatedChordUnit(text);
   if (rep) return transposeChord(rep.unit, shift, preferFlat).repeat(rep.count);
   const m = text.match(CHORD_RE);
@@ -844,6 +866,8 @@ const NNS_TABLE = ['1','b2','2','b3','3','4','#4','5','b6','6','b7','7'];
 function toNashville(text, baseSemitone){
   const inner = unwrapParens(text);
   if (inner !== null) return '(' + toNashville(inner, baseSemitone) + ')';
+  const starInner = unwrapAsterisk(text);
+  if (starInner !== null) return toNashville(starInner, baseSemitone) + '*';
   const rep = repeatedChordUnit(text);
   if (rep) return toNashville(rep.unit, baseSemitone).repeat(rep.count);
   const m = text.match(CHORD_RE);
@@ -1044,18 +1068,24 @@ function normalizeChordToken(text){
   }
   return text;
 }
-// Splits one whitespace-delimited token into several chord tokens on
-// internal "."s. Filler-dot sources normally leave a space after each
-// chord's dot too ("A7. D"), but not always -- when a dot lands with no
-// surrounding space at all, two chords end up fused into one token
-// ("A7.D" for "A7 D"). Returns the split pieces (with column offsets
-// within the original token) only if every piece is a valid chord;
-// otherwise null, so the caller falls back to treating it as one token
-// (a real chord can itself contain no "." at all, and a plain trailing-dot
-// token like "Edim/C#." is handled separately by normalizeChordToken).
-function splitFusedChordToken(token, baseCol){
-  if (!token.includes('.')) return null;
-  const parts = token.split('.');
+// Splits one whitespace-delimited token into several chord tokens on an
+// internal glue character. Filler-dot sources normally leave a space after
+// each chord's dot too ("A7. D"), but not always -- when a dot lands with
+// no surrounding space at all, two chords end up fused into one token
+// ("A7.D" for "A7 D"); a hyphen-joined passing-chord run ("G-D/F#-Em" for
+// "G, D/F#, Em in quick succession") glues the same way with "-" instead.
+// Safe for "-" specifically because CHORD_RE's own quality character class
+// never includes a literal "-" (confirmed -- no real chord name can
+// contain one), so a hyphen inside a token is never part of a single
+// chord's own spelling, exactly like "." isn't. Returns the split pieces
+// (with column offsets within the original token) only if every piece is
+// a valid chord; otherwise null, so the caller falls back to treating it
+// as one token (a real chord can contain neither glue character at all,
+// and a plain trailing-dot token like "Edim/C#." is handled separately by
+// normalizeChordToken).
+function splitFusedChordTokenOn(token, baseCol, glue){
+  if (!token.includes(glue)) return null;
+  const parts = token.split(glue);
   if (parts.some(p => p === '')) return null;
   const normalized = parts.map(normalizeChordToken);
   if (!normalized.every(isChordToken)) return null;
@@ -1063,9 +1093,12 @@ function splitFusedChordToken(token, baseCol){
   let offset = 0;
   for (let i=0; i<parts.length; i++){
     result.push({ text: normalized[i], col: baseCol + offset });
-    offset += parts[i].length + 1; // +1 for the "." that separated it
+    offset += parts[i].length + 1; // +1 for the glue char that separated it
   }
   return result;
+}
+function splitFusedChordToken(token, baseCol){
+  return splitFusedChordTokenOn(token, baseCol, '.') || splitFusedChordTokenOn(token, baseCol, '-');
 }
 function lineIsChordLine(line){
   const toks = tokenizeLine(line);
@@ -1080,15 +1113,45 @@ function lineIsChordLine(line){
 // despaceFillerDots) even on a section label by itself, which has only one
 // such dot and so doesn't clear that heuristic's own 2+ threshold.
 const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\s*:?\s*\]?$/i;
-function detectSectionLabel(trimmed){
-  const m = trimmed.match(SECTION_WORD_RE);
-  if (!m) return null;
+function sectionLabelFromMatch(m){
   const word = /pre-?chorus/i.test(m[1]) ? 'Pre-Chorus' : m[1][0].toUpperCase()+m[1].slice(1).toLowerCase();
   // repeat count can be written as "2x" (number first) or "x2" (x first, e.g. "Bridge x2")
   let suffix = '';
   if (m[2]) suffix = m[2] + (m[3]?'x':'');
   else if (m[4]) suffix = 'x' + (m[5]||'');
   return suffix ? `${word} ${suffix}` : word;
+}
+function detectSectionLabel(trimmed){
+  const m = trimmed.match(SECTION_WORD_RE);
+  return m ? sectionLabelFromMatch(m) : null;
+}
+// Same word/bracket/repeat-count shape as SECTION_WORD_RE, but without the
+// trailing $ -- matches just the LEADING section name off a line that has
+// more after it, rather than requiring the whole line to be only that.
+// Needed for charts that glue a repeat count in a shape SECTION_WORD_RE
+// doesn't parse as a suffix ("INTRO (x4)", "[BRIDGE] x2" -- parenthesized,
+// or after the closing bracket, neither of which SECTION_WORD_RE's suffix
+// group accepts) or that write a whole bar-notation progression directly
+// after the section name on the same line ("[INTRO] C - Am - G - Em - Am
+// -- D"). Gated by lineIsChordLine() on the remainder (see
+// splitLeadingSectionLabel() below) specifically so this doesn't
+// false-positive on an ordinary lyric line that happens to start with one
+// of these words ("Repeat after me...", "Ending up right here...") --
+// *only* matches when what's left after the header genuinely still looks
+// like a chord line on its own.
+const SECTION_WORD_PREFIX_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\s*:?\s*\]?/i;
+// Returns {name, rest} if `trimmed` is a section name followed by more
+// content that's itself a valid chord line (the glued-count or glued-
+// progression cases above); null otherwise, including when the ENTIRE line
+// is already a plain section label (detectSectionLabel() already owns
+// that case -- this one is specifically for when there's a chord-line
+// remainder to preserve, not discard).
+function splitLeadingSectionLabel(trimmed){
+  const m = trimmed.match(SECTION_WORD_PREFIX_RE);
+  if (!m) return null;
+  const rest = trimmed.slice(m[0].length).trim();
+  if (!rest || !lineIsChordLine(rest)) return null;
+  return { name: sectionLabelFromMatch(m), rest };
 }
 function parseBody(bodyText, collapseBlanks){
   if (collapseBlanks === undefined) collapseBlanks = true;
@@ -1115,6 +1178,17 @@ function parseBody(bodyText, collapseBlanks){
       blocks.push({type:'section', text: autoSection});
       i++; continue;
     }
+    // A section name glued to more content on the same line that's itself
+    // a real chord progression ("[INTRO] C - Am - G", "INTRO (x4)") --
+    // split off the header and re-process the remainder as this same line,
+    // rather than letting the whole thing fall through to lyricOnly (which
+    // would silently drop the chords from parsing, not just the heading).
+    const split = splitLeadingSectionLabel(trimmed);
+    if (split){
+      blocks.push({type:'section', text: split.name});
+      rawLines[i] = split.rest;
+      continue;
+    }
     if (lineIsChordLine(line)){
       const tokens = tokenizeLine(line).flatMap(t =>
         splitFusedChordToken(t.text, t.col) || [{ ...t, text: normalizeChordToken(t.text) }]);
@@ -1123,7 +1197,17 @@ function parseBody(bodyText, collapseBlanks){
       if (next !== undefined){
         const nt = next.trim();
         nextIsBlank = nt === '';
-        nextIsSection = nt.startsWith('##') || !!detectSectionLabel(nt);
+        // splitLeadingSectionLabel() too, not just detectSectionLabel() --
+        // a next line like "BRIDGE (x2)" isn't a whole-line section match
+        // (detectSectionLabel alone says no), but it's still a section
+        // header, not a lyric: without this, it got swallowed as this
+        // chord line's "lyric" instead of being left for its own turn
+        // through the main loop, where splitLeadingSectionLabel() would
+        // otherwise correctly split it into a section block + a separate
+        // chordOnly line a moment later. Shipped for real: "Interlude"'s
+        // own chord line paired with the literal text "BRIDGE (x2)" as if
+        // it were a lyric.
+        nextIsSection = nt.startsWith('##') || !!detectSectionLabel(nt) || !!splitLeadingSectionLabel(nt);
         nextIsChord = !nextIsBlank && !nextIsSection && lineIsChordLine(next);
       }
       if (next !== undefined && !nextIsChord && !nextIsSection && !nextIsBlank){
@@ -2932,6 +3016,36 @@ let activeSongRepaint = null;
 // beforeunload guards below ask "does the *current* edit view have unsaved
 // changes" without them needing to know anything about its form fields.
 let editDirtyCheck = null;
+// route.date above is only ever computed once, when the script first runs.
+// A tab kept open across midnight (very plausible for a bookmarked/PWA
+// mobile tab, left open for days without a real reload) never re-derives
+// it again on its own -- the home view just keeps showing whatever Sunday
+// was "nearest" back when the page first loaded, even after that's fallen
+// behind the actual current week. Reported for real: still showing last
+// Sunday's setlist two days after that Sunday had passed.
+// Checked on regaining visibility/focus rather than on a timer, and only
+// acts when the calendar date has genuinely changed since last checked
+// (visibilitychange/focus fire far more often than that -- every app
+// switch or screen lock on mobile) and the shown date has already passed
+// relative to today specifically (not merely "earlier than the freshly
+// computed nearest Sunday", which a date you deliberately navigated to a
+// few days in the future -- a setlist staged for a Sunday or any other day
+// beyond this week -- would *also* satisfy well before it's actually
+// stale). This never touches a date that's still current or upcoming.
+let lastKnownTodayISO = todayISO();
+function refreshStaleHomeDateIfNeeded(){
+  const today = todayISO();
+  if (today === lastKnownTodayISO) return;
+  lastKnownTodayISO = today;
+  if (route.view === 'home' && route.date < today){
+    route.date = nearestSundayISO();
+    render();
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshStaleHomeDateIfNeeded();
+});
+window.addEventListener('focus', refreshStaleHomeDateIfNeeded);
 
 function go(r){ route = r; render(); window.scrollTo(0,0); }
 // Entering the editor pushes a real history entry (regular go() doesn't, on
