@@ -260,6 +260,60 @@ now fixed, but worth understanding why):
   you refactor this, keep that write; without it, the correction only
   lasts one page load and the next reload can regress it right back to
   looking stale again.
+- **Adding a brand-new publishable field has a one-time rollout trap all
+  of its own**, separate from the two above — hit for real when
+  `setlistKeyOverrides` shipped. Every *existing* device's saved
+  `STORE_KEY` blob predates a field that didn't exist yet, so
+  `saved.<newField>` is `undefined` on that device's very first load after
+  the field ships — not an empty `{}` an editor actually chose, just
+  "never had an opinion." `songs`/`setlists`/`printPrefs` already handle
+  this correctly almost by accident: their local-draft fallback is
+  `saved.songs || fresh.songs` (and the pre-dated-setlists flat-array
+  migration), so a missing value falls through to the fresh seed, not to
+  an empty literal. The first cut of `setlistKeyOverrides` didn't do this —
+  it defaulted straight to `const overrides = saved.setlistKeyOverrides ||
+  {}` — and that `{}` is indistinguishable from "this editor explicitly
+  cleared every override." If that editor's very next Publish ran before
+  `overridesUnedited` could correct it (itself unreliable here too — see
+  next bullet), `mergeSetlistKeyOverridesForPublish()` compared that `{}`
+  against a baseline that **did** have real data (via
+  `publishedBaselineSetlistKeyOverrides()`'s own, correctly-fresh-falling-
+  back value), read the gap as "every override was deliberately removed,"
+  and the next publish from that device wiped real overrides off GitHub
+  for a date that editor never even opened. Reproduced for real with a
+  simulated pre-feature save (no `setlistKeyOverrides` key at all) plus a
+  fresh seed that still had live data; confirmed the resulting publish
+  emptied the `SEED_SETLIST_KEY_OVERRIDES` block. Fixed by giving the new
+  field the same "missing falls through to fresh" shape the other three
+  already had: `const overrides = saved.setlistKeyOverrides !== undefined
+  ? saved.setlistKeyOverrides : fresh.setlistKeyOverrides`. **If you add a
+  fifth publishable field, give its local-draft fallback this same shape
+  from the start** — defaulting a brand-new field's "nobody's touched this
+  yet" case to an empty literal instead of the fresh seed is exactly how
+  this one got real published data wiped by an uninvolved editor's
+  unrelated publish.
+- **The same rollout gap existed one level up, in the `reference` object
+  `loadState()` compares against to decide "unedited."** Before this fix,
+  `const reference = getLastSeenSeedSig() || {...per-field
+  getEverPublishedRaw() fallback...}` only ran that fallback when
+  `getLastSeenSeedSig()` returned nothing at all. A device with an
+  *old-shaped* `LAST_SEEN_SEED_KEY` object (any returning editor, since
+  this tracking predates `setlistKeyOverrides`) has a truthy `lastSeen`,
+  so the `||` short-circuited and `reference.setlistKeyOverrides` silently
+  read as `undefined` off an object that simply never had that property —
+  making `overridesUnedited` permanently false for that device until its
+  very next `setLastSeenSeedSig()` call (at the end of the same
+  `loadState()`) catches up. On its own this "only" meant a false
+  "unpublished changes" banner that one load, but it compounded with the
+  bug above by being the reason `overridesUnedited` couldn't be trusted to
+  paper over the `{}`-default problem. Fixed by resolving `reference` per
+  field (`referenceSig()`) instead of as one all-or-nothing object, so a
+  `lastSeen` that's missing just the new field still bootstraps that one
+  field from `getEverPublishedRaw()` rather than reading a silently-
+  undefined property off an old-shaped object. Same advice as the bullet
+  above: a fifth field needs a `referenceSig(...)` entry too, not just a
+  `reference.<field>` access that assumes `lastSeen` either has every
+  field or none of them.
 
 ## Known traps
 

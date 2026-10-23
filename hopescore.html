@@ -1758,9 +1758,6 @@ function loadState(){
       if (!setlists){
         setlists = (saved.setlist && saved.setlist.length) ? { [nearestSundayISO()]: saved.setlist } : {};
       }
-      // No legacy shape to migrate here (this field postdates dated
-      // setlists), so a device that's never saved one just gets {}.
-      const overrides = saved.setlistKeyOverrides || {};
       // An editor (this device has a publish token configured) keeps their
       // own local song/setlist/print edits across reloads, so a draft
       // survives until they hit Publish -- but only a field this editor
@@ -1775,16 +1772,44 @@ function loadState(){
       // personal/local.
       if (getGhToken()){
         const fresh = seedState();
+        // setlistKeyOverrides postdates songs/setlists/printPrefs, so any
+        // device whose STORE_KEY save predates it has saved.setlistKeyOverrides
+        // === undefined -- true for every existing editor's very first load
+        // after this field shipped. Falling back to {} there (rather than to
+        // fresh, the way songs/setlists already effectively do via `saved.songs
+        // || fresh.songs` and the flat-setlist migration above) was a real
+        // shipped bug: it made "never touched this field" look identical to
+        // "explicitly cleared every override," and if this editor's very next
+        // Publish ran before `overridesUnedited` below had a chance to correct
+        // it, mergeSetlistKeyOverridesForPublish() read that local {} against
+        // a baseline that (via publishedBaselineSetlistKeyOverrides()'s own,
+        // correctly-fresh-falling-back value) still had the real data -- and
+        // wiped every override on GitHub for a date this editor never even
+        // opened. Reproduced for real with a simulated pre-feature save plus a
+        // fresh seed that still had live override data; confirmed the publish
+        // this produced emptied the SEED_SETLIST_KEY_OVERRIDES block.
+        const overrides = saved.setlistKeyOverrides !== undefined ? saved.setlistKeyOverrides : fresh.setlistKeyOverrides;
         // No lastSeen yet on this device -- fall back to this editor's own
         // last-published signature (see getEverPublishedRaw() above) as the
         // reference instead, so a draft that's simply unchanged since this
         // editor's own last publish doesn't get stuck reading as "edited"
-        // forever just because it predates this tracking.
-        const reference = getLastSeenSeedSig() || {
-          songs: (() => { const s = getEverPublishedRaw(GH_LAST_PUBLISHED_KEY, 'songs'); return s ? songsSignature(s) : null; })(),
-          setlists: (() => { const s = getEverPublishedRaw(GH_LAST_PUBLISHED_SETLISTS_KEY, 'setlists'); return s ? setlistsSignature(s) : null; })(),
-          printPrefs: (() => { const p = getEverPublishedRaw(GH_LAST_PUBLISHED_PRINT_KEY, 'printPrefs'); return p ? printPrefsSignature(p) : null; })(),
-          setlistKeyOverrides: (() => { const o = getEverPublishedRaw(GH_LAST_PUBLISHED_KEY_OVERRIDES_KEY, 'overrides'); return o ? setlistKeyOverridesSignature(o) : null; })(),
+        // forever just because it predates this tracking. Resolved per field
+        // (not as one all-or-nothing object) so a device whose lastSeen
+        // predates a newer field -- the exact same "existing device, brand
+        // new field" situation overrides itself just fixed above -- still
+        // bootstraps THAT field from getEverPublishedRaw() instead of reading
+        // a silently-undefined property off an old-shaped lastSeen object.
+        const lastSeen = getLastSeenSeedSig();
+        function referenceSig(field, lastPublishedKey, lastPublishedField, sigFn){
+          if (lastSeen && lastSeen[field] !== undefined) return lastSeen[field];
+          const raw = getEverPublishedRaw(lastPublishedKey, lastPublishedField);
+          return raw ? sigFn(raw) : null;
+        }
+        const reference = {
+          songs: referenceSig('songs', GH_LAST_PUBLISHED_KEY, 'songs', songsSignature),
+          setlists: referenceSig('setlists', GH_LAST_PUBLISHED_SETLISTS_KEY, 'setlists', setlistsSignature),
+          printPrefs: referenceSig('printPrefs', GH_LAST_PUBLISHED_PRINT_KEY, 'printPrefs', printPrefsSignature),
+          setlistKeyOverrides: referenceSig('setlistKeyOverrides', GH_LAST_PUBLISHED_KEY_OVERRIDES_KEY, 'overrides', setlistKeyOverridesSignature),
         };
         const songsUnedited = reference.songs && songsSignature(saved.songs || fresh.songs) === reference.songs;
         const setlistsUnedited = reference.setlists && setlistsSignature(setlists) === reference.setlists;
@@ -2341,7 +2366,25 @@ function seedState(){
 };
   /* SEED_PRINT_END */
   /* SEED_SETLIST_KEY_OVERRIDES_START */
-  const seedSetlistKeyOverrides = {};
+  const seedSetlistKeyOverrides = {
+  "2026-10-24": {
+    "seed4": {
+      "semitone": 4,
+      "isMinor": false,
+      "preferFlat": false
+    },
+    "mvgczyy28r0iwf": {
+      "semitone": 9,
+      "isMinor": false,
+      "preferFlat": false
+    },
+    "seed12": {
+      "semitone": 2,
+      "isMinor": false,
+      "preferFlat": false
+    }
+  }
+};
   /* SEED_SETLIST_KEY_OVERRIDES_END */
   // Only fills in createdAt/updatedAt when a song doesn't already have them
   // (true for every song published before these fields existed, or a
