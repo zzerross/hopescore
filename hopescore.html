@@ -879,7 +879,16 @@ function toNashville(text, baseSemitone){
   const [, root, acc, qual, bassRoot, bassAcc] = m;
   const rs = noteToSemitone(root+acc);
   const diff = ((rs - baseSemitone) % 12 + 12) % 12;
-  let out = NNS_TABLE[diff] + qual;
+  // A quality that starts with a digit (7, 9, 11, 13, 6, ...) glued
+  // straight onto the scale-degree number reads as one multi-digit
+  // number instead of "degree, then quality" -- G7 in key of C used to
+  // render as "57" (degree 5 + quality "7"), and Bb7 as "b77" (degree
+  // "b7" + quality "7", doubly ambiguous since the degree itself can also
+  // end in a digit). A hyphen only when it's actually needed (qual
+  // starting with a letter -- "m", "sus", "maj", "dim", "aug" -- is
+  // already unambiguous without one, e.g. "2sus" or "6m7") keeps the
+  // common case exactly as before.
+  let out = NNS_TABLE[diff] + (/^[0-9]/.test(qual) ? '-' : '') + qual;
   if (bassRoot) {
     const bs = noteToSemitone(bassRoot+(bassAcc||''));
     const bdiff = ((bs - baseSemitone) % 12 + 12) % 12;

@@ -191,17 +191,24 @@ mode produced it:
   mode) so those render as themselves instead of a nonsense `"N.C.:N.C."`
   duplicate.
 
-**Known pre-existing quirk, made more visible by `nashvilleChords`**:
-`toNashville()`'s output is `NNS_TABLE[diff] + qual` with no separator —
-for a chord whose own quality suffix starts with a digit (`G7` in key of
-C: scale degree `5` + quality `7` → `"57"`), the concatenation reads as
-one two-digit number instead of "5, dominant 7th." This isn't new — plain
-Numbers mode has always rendered `G7` as `57` — but `nashvilleChords`
-putting it right next to the actual chord name (`"57:G7"`) makes the
-ambiguity harder to miss. Not fixed here since it's a separate, pre-
-existing formatting question (what separator or styling actually reads
-unambiguously) that wasn't part of what was asked; worth revisiting if it
-turns out to actually confuse anyone reading Numbers mode charts.
+**Pre-existing quirk `nashvilleChords` made visible enough to fix**:
+`toNashville()` used to concatenate `NNS_TABLE[diff] + qual` with no
+separator — for a chord whose quality suffix starts with a digit (`G7` in
+key of C: scale degree `5` + quality `7`), that read as `"57"`, one
+two-digit number instead of "5, dominant 7th" (worse for `Bb7`: degree
+`"b7"` + quality `"7"` → `"b77"`, doubly ambiguous since the degree
+itself can also end in a digit). Plain Numbers mode always had this;
+`nashvilleChords` putting it right next to the real chord name
+(`"57:G7"`) just made it hard to miss. Fixed by inserting a `-` only when
+`qual` starts with a digit (`/^[0-9]/.test(qual)`) — `G7` → `"5-7"`,
+`Bb7` → `"b7-7"` — while a letter-leading quality (`m`, `sus`, `maj`,
+`dim`, `aug`, ...) stays exactly as before (`"2m7"`, `"5sus4"`), since
+those were never ambiguous without a letter already separating the two
+parts. Applies everywhere `toNashville()` is used, not just
+`nashvilleChords` — plain Numbers mode's own long-standing glued-digits
+problem (this surfaced for real on the seed data's own `"Holy is The
+Lord"`, a G2 chord in key D rendering as `"42"`) is fixed by the same one
+change.
 
 ### Song body text: blank lines are canonicalized on save
 
