@@ -889,6 +889,23 @@ function toNashville(text, baseSemitone){
 }
 function makeTransform(mode, base, target){
   if (mode === 'nashville') return (t)=>toNashville(t, base.semitone);
+  // Numbers+Chords: shows "<number>:<chord name>" as one plain-text token,
+  // not a real superscript -- reuses the exact same column-realignment
+  // machinery every other mode already relies on (realignPair()/
+  // realignChordOnly() just measure whatever string a token transforms
+  // into), so no new alignment logic was needed for this. toNashville(t)
+  // returning t unchanged is how it already signals "not a real chord" for
+  // special tokens (N.C., bar lines |/||, "///", "x2", etc. -- see their
+  // own CHORD_RE-miss fallbacks) -- reused here as the same signal to skip
+  // combining and just pass the token through as-is, rather than producing
+  // a nonsense "N.C.:N.C." duplicate.
+  if (mode === 'nashvilleChords'){
+    return (t) => {
+      const num = toNashville(t, base.semitone);
+      if (num === t) return t;
+      return `${num}:${transposeChord(t, 0, base.preferFlat)}`;
+    };
+  }
   const useTarget = mode === 'transposed';
   const shift = useTarget ? (((target.semitone - base.semitone) % 12) + 12) % 12 : 0;
   const preferFlat = useTarget ? target.preferFlat : base.preferFlat;
@@ -3996,6 +4013,7 @@ function renderSongView(songId){
   const {main: titleMain, artist: titleArtist} = splitTitleArtist(song.title);
   function keyBadgeText(){
     if (prefs.mode === 'nashville') return '1-7';
+    if (prefs.mode === 'nashvilleChords') return '1-7+C';
     if (prefs.mode === 'transposed'){
       const t = parseKeyValue(prefs.target);
       return keyLabel(t.semitone, t.isMinor, t.preferFlat);
@@ -4207,6 +4225,7 @@ function renderSongView(songId){
           <button data-mode="original" class="${prefs.mode==='original'?'active':''}" style="flex:1;">Original</button>
           <button data-mode="transposed" class="${prefs.mode==='transposed'?'active':''}" style="flex:1;">Transpose</button>
           <button data-mode="nashville" class="${prefs.mode==='nashville'?'active':''}" style="flex:1;">Numbers</button>
+          <button data-mode="nashvilleChords" class="${prefs.mode==='nashvilleChords'?'active':''}" style="flex:1;">Both</button>
         </div>
         ${prefs.mode==='transposed' ? `<select id="modalKeySel" style="width:100%;margin-top:12px;padding:9px 10px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);">${keyOptionsHTML(prefs.target)}</select>` : ''}
         <div class="modal-actions"><button class="iconbtn primary" id="modalOk">Done</button></div>`;

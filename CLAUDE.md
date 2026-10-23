@@ -161,6 +161,48 @@ own data, so every other date's setlist still uses its real key.
   change to a view that currently has no transpose concept at all, not an
   extension of an existing one.
 
+### Key/chord display modes
+
+`makeTransform(mode, base, target)` (section 1, Chord theory) is the one
+place every read-only view's chord rendering funnels through — it returns
+a single `(chordToken) => string` function, applied per chord token by
+`renderBlocks()`/`realignPair()`/`realignChordOnly()` (section 3). Four
+modes exist, picked via the song view's/Present's key badge
+(`openKeyModal()`, section 7) — all four reuse the exact same column-
+realignment machinery, since that machinery only ever cares about the
+actual rendered width of whatever string a token turns into, never which
+mode produced it:
+
+- `original` — `transposeChord(t, 0, base.preferFlat)`: the song's own
+  key, just respelled per its `preferFlat` choice.
+- `transposed` — `transposeChord(t, shift, target.preferFlat)`: shifted to
+  the chosen target key.
+- `nashville` — `toNashville(t, base.semitone)`: scale-degree numbers
+  relative to the song's own key (never the Transpose target — Numbers
+  mode and Transpose mode are mutually exclusive, not composable).
+- `nashvilleChords` (toolbar label "Both") — `"<number>:<chord>"` as one
+  plain-text token, e.g. `"3m:Em"`. Deliberately not a real HTML
+  superscript: plain concatenation needed zero new alignment logic, since
+  it's still just one wider token through the same realign path every
+  other mode already uses. Skips combining for anything `toNashville()`
+  didn't recognize as a real chord (bar lines, `N.C.`, `///`, `x2`, etc. —
+  detected via `num === t`, i.e. `toNashville` returned the token
+  unchanged, the same fallback those tokens already hit in every other
+  mode) so those render as themselves instead of a nonsense `"N.C.:N.C."`
+  duplicate.
+
+**Known pre-existing quirk, made more visible by `nashvilleChords`**:
+`toNashville()`'s output is `NNS_TABLE[diff] + qual` with no separator —
+for a chord whose own quality suffix starts with a digit (`G7` in key of
+C: scale degree `5` + quality `7` → `"57"`), the concatenation reads as
+one two-digit number instead of "5, dominant 7th." This isn't new — plain
+Numbers mode has always rendered `G7` as `57` — but `nashvilleChords`
+putting it right next to the actual chord name (`"57:G7"`) makes the
+ambiguity harder to miss. Not fixed here since it's a separate, pre-
+existing formatting question (what separator or styling actually reads
+unambiguously) that wasn't part of what was asked; worth revisiting if it
+turns out to actually confuse anyone reading Numbers mode charts.
+
 ### Song body text: blank lines are canonicalized on save
 
 A song's `body` is free-form chord/lyric chart text — see `parseBody()`
