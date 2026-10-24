@@ -248,7 +248,38 @@ team-published rather than device-local, but that's a batch-wide printed-
 output setting answering "do we want chords on the printed sheet at all,"
 not the same decision as toggling a single live view mid-read).
 
-### Song body text: blank lines are canonicalized on save
+### Key/mode picker: now shared between the Chords view and Present
+
+The same inconsistency sweep that found the Chords/Parts gap above also
+found that Present had no way to change Original/Transpose/Numbers/Both
+mode at all — only the regular Chords view had a key badge. Changing mode
+while presenting meant leaving Present, finding the song in the Chords
+view, changing it there, and re-entering Present, awkward for something
+that's genuinely a live, in-the-moment decision (a worship leader
+realizing mid-set they want Numbers up on screen).
+
+Fixed by extracting what used to be a nested `openKeyModal()` inside
+`renderSongView()`'s own closure into two standalone functions, next to
+`computeSongRows()` (section 6, "shared by song view + Present" — this is
+exactly the kind of thing that section is for): `songKeyBadgeText(song,
+prefs)` (what a badge should read) and `openKeyModeModal(prefs,
+onchange)` (the actual picker — `prefs` is whichever `songViewPrefs`
+entry the caller is showing, mutated in place; `onchange` runs after
+every change so each caller updates its own badge and repaints however
+it needs to, without the modal itself knowing which view opened it).
+`renderSongView()` now just calls these with its own `prefs`/`syncModeUI`;
+Present gained its own `#presentKeyBadgeBtn` (wired once at module scope,
+like its other toolbar controls, looking up the current song fresh via
+`presentQueue[presentIdx]` on each click) calling the same
+`openKeyModeModal(prefs, paintPresent)`.
+
+Because both views read and write the exact same `songViewPrefs[song.id]`
+object (see "Per-date key overrides" above for why that cache is per-
+songId, not per-view), changing mode from Present is visible in the
+Chords view too if you later open the same song there this session, and
+vice versa — a feature, not a bug: it's one shared "how is this song
+currently being read" preference, not two independent ones that happen
+to look the same.
 
 A song's `body` is free-form chord/lyric chart text — see `parseBody()`
 (section 2) for the actual line-by-line parsing rules (chord-line

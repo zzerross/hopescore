@@ -471,7 +471,7 @@
      nothing clickable in that clipped sliver. Pinned to their natural size;
      .present-top's own overflow-x:auto is what absorbs any leftover
      overflow now, on whatever's narrowest. */
-  #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentColSeg, #presentFitToggle, #presentFontSeg, #presentSpacingSeg, #presentClose{ flex-shrink:0; }
+  #presentKeyBadgeBtn, #presentThemeToggle, #presentChordsToggle, #presentSectionsToggle, #presentColSeg, #presentFitToggle, #presentFontSeg, #presentSpacingSeg, #presentClose{ flex-shrink:0; }
   .present-body{ flex:1; position:relative; overflow:hidden; padding:0 26px 26px; }
   .present-chart-wrap{
     position:absolute; inset:0 26px 26px; display:flex;
@@ -689,6 +689,7 @@
   <div class="present-top">
     <div class="present-counter" id="presentCounter"></div>
     <div class="present-title" id="presentTitle"></div>
+    <button class="topbar-key-badge" id="presentKeyBadgeBtn" title="Change key / view mode"></button>
     <button class="iconbtn" id="presentThemeToggle" title="Toggle the dark stage theme">Dark</button>
     <button class="iconbtn" id="presentChordsToggle" title="Show/hide chords">Chords</button>
     <button class="iconbtn" id="presentSectionsToggle" title="Show/hide part labels (Verse, Chorus…)">Parts</button>
@@ -2911,6 +2912,53 @@ function computeSongRows(song, mode, targetVal){
   }
   return rows;
 }
+// What a key badge button should read for a given song + songViewPrefs
+// entry -- shared by the regular song view and Present (see
+// openKeyModeModal() just below) so both badges read the same way.
+function songKeyBadgeText(song, prefs){
+  if (prefs.mode === 'nashville') return '1-7';
+  if (prefs.mode === 'nashvilleChords') return '1-7+C';
+  if (prefs.mode === 'transposed'){
+    const t = parseKeyValue(prefs.target);
+    return keyLabel(t.semitone, t.isMinor, t.preferFlat);
+  }
+  return keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
+}
+// The key/mode picker behind both the song view's and Present's key badge
+// -- originally only existed inside the song view, so changing Transpose/
+// Numbers/Both mode while presenting meant leaving Present, going to the
+// song view, changing it there, then re-entering Present. `prefs` is
+// whichever songViewPrefs entry the caller is showing (same shared
+// object, mutated in place); `onchange` runs after every change so each
+// caller updates its own badge text and repaints however it needs to --
+// the modal itself doesn't know or care which view opened it.
+function openKeyModeModal(prefs, onchange){
+  function paint(){
+    modalBox.style.maxWidth = '340px';
+    modalBox.innerHTML = `
+      <h3>Key</h3>
+      <p class="msg">Choose how chords are shown for this song.</p>
+      <div class="seg" id="modalModeSeg" style="width:100%;">
+        <button data-mode="original" class="${prefs.mode==='original'?'active':''}" style="flex:1;">Original</button>
+        <button data-mode="transposed" class="${prefs.mode==='transposed'?'active':''}" style="flex:1;">Transpose</button>
+        <button data-mode="nashville" class="${prefs.mode==='nashville'?'active':''}" style="flex:1;">Numbers</button>
+        <button data-mode="nashvilleChords" class="${prefs.mode==='nashvilleChords'?'active':''}" style="flex:1;">Both</button>
+      </div>
+      ${prefs.mode==='transposed' ? `<select id="modalKeySel" style="width:100%;margin-top:12px;padding:9px 10px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);">${keyOptionsHTML(prefs.target)}</select>` : ''}
+      <div class="modal-actions"><button class="iconbtn primary" id="modalOk">Done</button></div>`;
+    modalBox.querySelector('#modalModeSeg').addEventListener('click', (e)=>{
+      const btn = e.target.closest('button'); if (!btn) return;
+      prefs.mode = btn.dataset.mode;
+      onchange();
+      paint();
+    });
+    const modalKeySel = modalBox.querySelector('#modalKeySel');
+    if (modalKeySel) modalKeySel.addEventListener('change', (e)=>{ prefs.target = e.target.value; onchange(); });
+    modalBox.querySelector('#modalOk').addEventListener('click', closeModal);
+  }
+  paint();
+  modalBackdrop.classList.add('open');
+}
 function rowToLineEl(r){
   const div = document.createElement('div');
   div.className = 'line ' + r.cls;
@@ -4061,15 +4109,7 @@ function renderSongView(songId){
   if (!song){ go({view:'home', date: nearestUpcomingSetlistDate()}); return; }
   const prefs = songViewPrefs[songId] || (songViewPrefs[songId] = defaultSongViewPrefs(song, route.date));
   const {main: titleMain, artist: titleArtist} = splitTitleArtist(song.title);
-  function keyBadgeText(){
-    if (prefs.mode === 'nashville') return '1-7';
-    if (prefs.mode === 'nashvilleChords') return '1-7+C';
-    if (prefs.mode === 'transposed'){
-      const t = parseKeyValue(prefs.target);
-      return keyLabel(t.semitone, t.isMinor, t.preferFlat);
-    }
-    return keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
-  }
+  function keyBadgeText(){ return songKeyBadgeText(song, prefs); }
 
   // This song's reference videos (its own explicit list, or links detected
   // in the body/description for a song that predates that list) -- only the
@@ -4215,7 +4255,7 @@ function renderSongView(songId){
     const idx = ids.indexOf(song.id);
     openPresent(idx===-1? [song.id] : ids, idx===-1?0:idx, presentForDate);
   });
-  slot.querySelector('#keyBadgeBtn').addEventListener('click', openKeyModal);
+  slot.querySelector('#keyBadgeBtn').addEventListener('click', ()=> openKeyModeModal(prefs, syncModeUI));
   if (isEditorLoggedIn()){
     slot.querySelector('#editSongBtn').addEventListener('click', ()=>{
       goToEdit({view:'edit', songId: song.id, date: route.date});
@@ -4266,33 +4306,6 @@ function renderSongView(songId){
   function syncModeUI(){
     document.getElementById('keyBadgeBtn').textContent = keyBadgeText();
     repaint();
-  }
-  function openKeyModal(){
-    function paint(){
-      modalBox.style.maxWidth = '340px';
-      modalBox.innerHTML = `
-        <h3>Key</h3>
-        <p class="msg">Choose how chords are shown for this song.</p>
-        <div class="seg" id="modalModeSeg" style="width:100%;">
-          <button data-mode="original" class="${prefs.mode==='original'?'active':''}" style="flex:1;">Original</button>
-          <button data-mode="transposed" class="${prefs.mode==='transposed'?'active':''}" style="flex:1;">Transpose</button>
-          <button data-mode="nashville" class="${prefs.mode==='nashville'?'active':''}" style="flex:1;">Numbers</button>
-          <button data-mode="nashvilleChords" class="${prefs.mode==='nashvilleChords'?'active':''}" style="flex:1;">Both</button>
-        </div>
-        ${prefs.mode==='transposed' ? `<select id="modalKeySel" style="width:100%;margin-top:12px;padding:9px 10px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);">${keyOptionsHTML(prefs.target)}</select>` : ''}
-        <div class="modal-actions"><button class="iconbtn primary" id="modalOk">Done</button></div>`;
-      modalBox.querySelector('#modalModeSeg').addEventListener('click', (e)=>{
-        const btn = e.target.closest('button'); if (!btn) return;
-        prefs.mode = btn.dataset.mode;
-        syncModeUI();
-        paint();
-      });
-      const modalKeySel = modalBox.querySelector('#modalKeySel');
-      if (modalKeySel) modalKeySel.addEventListener('change', (e)=>{ prefs.target = e.target.value; syncModeUI(); });
-      modalBox.querySelector('#modalOk').addEventListener('click', closeModal);
-    }
-    paint();
-    modalBackdrop.classList.add('open');
   }
 
   document.getElementById('songChordsToggle').addEventListener('click', ()=>{
@@ -4459,6 +4472,7 @@ function paintPresent(){
   document.getElementById('presentSpacingLabel').textContent = getLineSpacing(fontView, song.id).toFixed(2)+'x';
 
   const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = defaultSongViewPrefs(song, presentDate));
+  document.getElementById('presentKeyBadgeBtn').textContent = songKeyBadgeText(song, prefs);
   // Same column-count / fit-mode controls as the regular song view, mirrored
   // here now that the toolbar has a hide button -- no reason not to offer
   // the same layout controls in Present. They only visibly change anything
@@ -4529,6 +4543,12 @@ document.getElementById('presentFontDec').addEventListener('click', ()=> bumpPre
 document.getElementById('presentFontInc').addEventListener('click', ()=> bumpPresentFontSize(1));
 document.getElementById('presentSpacingDec').addEventListener('click', ()=> bumpPresentLineSpacing(-0.1));
 document.getElementById('presentSpacingInc').addEventListener('click', ()=> bumpPresentLineSpacing(0.1));
+document.getElementById('presentKeyBadgeBtn').addEventListener('click', ()=>{
+  const song = STATE.songs.find(s=>s.id===presentQueue[presentIdx]);
+  if (!song) return;
+  const prefs = songViewPrefs[song.id] || (songViewPrefs[song.id] = defaultSongViewPrefs(song, presentDate));
+  openKeyModeModal(prefs, paintPresent);
+});
 document.getElementById('presentThemeToggle').addEventListener('click', ()=>{
   setPresentTheme(getPresentTheme()==='black' ? 'normal' : 'black');
   paintPresent();
