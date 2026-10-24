@@ -516,6 +516,55 @@ now fixed, but worth understanding why):
   `nearestSundayISO()` is always `>= today` by construction — this never
   touches a date that's still current or upcoming, only one that can't be
   anything other than a stale leftover default.
+- **The home view's default landing date is "nearest upcoming setlist,"
+  not "nearest Sunday."** `nearestUpcomingSetlistDate()` (next to
+  `datesWithSetlists()`, section: date helpers) looks at every date that
+  already has a setlist built, keeps the ones `>= today`, and picks the
+  soonest one — falling back to the original `nearestSundayISO()` only
+  when nothing's been planned for any upcoming date. Added because an
+  out-of-band setlist (a Saturday service staged ahead of the next
+  Sunday) used to stay effectively hidden behind "this week" until its
+  own Sunday rolled around, even though it was the setlist actually
+  coming up next. Every call site that computes "the default date to
+  land on" (the initial `route` literal, `refreshStaleHomeDateIfNeeded()`,
+  the popstate handlers' no-state fallback, `render()`'s edit-view bounce-
+  back, and the handful of `route.date || ...` defensive fallbacks in the
+  song view/Present) uses this now, not `nearestSundayISO()` directly. Two
+  exceptions, deliberately unchanged: the flat-setlist-migration bucket in
+  `loadState()` (picks a date to file old pre-dated-setlist data under,
+  not a "what should I show" decision) and the calendar popover's
+  `#calToday` button, labeled "This week" — that's an explicit manual
+  override promising the literal current week's Sunday, not the smart
+  default, so it keeps calling `nearestSundayISO()` directly. If you add a
+  new "what date should I show" call site, route it through
+  `nearestUpcomingSetlistDate()` too, not `nearestSundayISO()`, unless
+  it's genuinely one of these two exceptions.
+- **`mergeSetlistsForPublish()` used to silently discard a pure
+  reorder.** Scaffolding the merged result off `server` and only ever
+  filtering by id (to drop local removals) or appending by id (to add
+  local additions) meant a reorder with no add/remove alongside it never
+  showed up in either operation — the published result was just `server`,
+  byte-for-byte unchanged, however the editor had rearranged their own
+  setlist with the up/down buttons. Reported for real: reordering and
+  publishing the same setlist a date had been built around repeatedly
+  looked like it had no effect. Reproduced directly against the merge
+  function (a pure two-entry swap, no add/remove, published back
+  identical to the pre-swap order) before fixing it, not guessed at from
+  symptoms alone. Fixed by comparing this editor's local order against
+  their own last-known-published baseline, restricted to the songs they
+  share with it (comparing the full arrays doesn't work — any add/remove
+  alone already makes them unequal) — if that order genuinely changed,
+  the merge scaffolds off the local order instead of the server order
+  (still respecting a concurrent removal or folding in a concurrent
+  addition from someone else, same as before), otherwise it keeps
+  deferring to whatever's live, exactly as before. Verified with eight
+  scenarios covering every combination of local reorder/add/remove
+  crossed with a concurrent server-side add/remove/reorder by someone
+  else, not just the one reported case. Two editors reordering the same
+  date concurrently still has no clean resolution — whichever publish
+  lands second simply wins for order, the same "last publish wins"
+  tradeoff already accepted elsewhere in this project (a song's own
+  fields don't merge either).
 - **This is a single shared GitHub token model**, not per-user auth.
   Don't build anything that assumes a song or setlist's "owner" can be
   reliably identified beyond the free-text editor name stamped on the git

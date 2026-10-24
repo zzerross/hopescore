@@ -1084,6 +1084,21 @@ function addMonthsISO(iso, months){
 function datesWithSetlists(){
   return new Set(Object.keys(STATE.setlists||{}).filter(d => (STATE.setlists[d]||[]).length > 0));
 }
+// The home view's actual default landing date: whichever date (today or
+// later) already has a setlist built and is soonest -- not always the
+// nearest Sunday. A setlist staged for an out-of-band date (a Saturday
+// service, a special event) that falls before the coming Sunday would
+// otherwise stay effectively hidden behind "this week" until its own
+// Sunday rolled around, even though it's the setlist that's actually
+// coming up next. Falls back to nearestSundayISO() -- the original
+// default -- whenever nothing's been planned yet for any upcoming date,
+// so the common case (most weeks only ever have the one Sunday setlist)
+// is completely unchanged.
+function nearestUpcomingSetlistDate(){
+  const today = todayISO();
+  const upcoming = [...datesWithSetlists()].filter(d => d >= today).sort();
+  return upcoming.length ? upcoming[0] : nearestSundayISO();
+}
 // One calendar-grid's worth of cells for the month containing monthStartISO:
 // null for the leading blanks before day 1 (so day 1 lands in the right
 // weekday column), then one ISO date per day of the month.
@@ -3188,7 +3203,7 @@ const viewRoot = document.getElementById('viewRoot');
 // the service itself, want today's/this week's setlist front and center.
 // The full song library lives further down the same page (see
 // renderHomeView()) rather than behind a separate view/tab.
-let route = {view:'home', date: dateFromUrl() || nearestSundayISO()};
+let route = {view:'home', date: dateFromUrl() || nearestUpcomingSetlistDate()};
 let activeSongRepaint = null;
 // Set by renderEditView() to a closure checking its own form fields against
 // their last-saved values, and cleared on leaving -- lets the popstate/
@@ -3198,17 +3213,18 @@ let editDirtyCheck = null;
 // route.date above is only ever computed once, when the script first runs.
 // A tab kept open across midnight (very plausible for a bookmarked/PWA
 // mobile tab, left open for days without a real reload) never re-derives
-// it again on its own -- the home view just keeps showing whatever Sunday
-// was "nearest" back when the page first loaded, even after that's fallen
-// behind the actual current week. Reported for real: still showing last
-// Sunday's setlist two days after that Sunday had passed.
+// it again on its own -- the home view just keeps showing whatever date
+// nearestUpcomingSetlistDate() picked back when the page first loaded,
+// even after that's fallen behind the actual current week. Reported for
+// real: still showing last Sunday's setlist two days after that Sunday
+// had passed.
 // Checked on regaining visibility/focus rather than on a timer, and only
 // acts when the calendar date has genuinely changed since last checked
 // (visibilitychange/focus fire far more often than that -- every app
 // switch or screen lock on mobile) and the shown date has already passed
 // relative to today specifically (not merely "earlier than the freshly
-// computed nearest Sunday", which a date you deliberately navigated to a
-// few days in the future -- a setlist staged for a Sunday or any other day
+// recomputed default", which a date you deliberately navigated to a few
+// days in the future -- a setlist staged for a Sunday or any other day
 // beyond this week -- would *also* satisfy well before it's actually
 // stale). This never touches a date that's still current or upcoming.
 let lastKnownTodayISO = todayISO();
@@ -3217,7 +3233,7 @@ function refreshStaleHomeDateIfNeeded(){
   if (today === lastKnownTodayISO) return;
   lastKnownTodayISO = today;
   if (route.view === 'home' && route.date < today){
-    route.date = nearestSundayISO();
+    route.date = nearestUpcomingSetlistDate();
     render();
   }
 }
@@ -3264,7 +3280,7 @@ function goReplaceTop(r){ route = r; history.replaceState({route:r}, ''); render
 // stuck back on the edit view instead of actually leaving.
 window.addEventListener('popstate', (e)=>{
   if (route.view==='edit' && editDirtyCheck && editDirtyCheck()){
-    const targetRoute = (e.state && e.state.route) || {view:'home', date: nearestSundayISO()};
+    const targetRoute = (e.state && e.state.route) || {view:'home', date: nearestUpcomingSetlistDate()};
     history.pushState({route}, '');
     confirmModal('Unsaved changes', "This song has changes that haven't been saved yet. Leave without saving?", 'Leave without saving').then(ok=>{
       if (ok){ editDirtyCheck = null; goReplaceTop(targetRoute); }
@@ -3272,7 +3288,7 @@ window.addEventListener('popstate', (e)=>{
     return;
   }
   editDirtyCheck = null;
-  route = (e.state && e.state.route) || {view:'home', date: nearestSundayISO()};
+  route = (e.state && e.state.route) || {view:'home', date: nearestUpcomingSetlistDate()};
   render();
 });
 // Covers refresh and closing the tab/app -- popstate above only fires for
@@ -3290,11 +3306,11 @@ function render(){
   // but route state could in principle point here some other way (e.g. a
   // stale reference after logging out) -- bounce back rather than expose it.
   if (route.view==='edit' && !isEditorLoggedIn()){
-    route = { view: 'home', date: route.date || nearestSundayISO() };
+    route = { view: 'home', date: route.date || nearestUpcomingSetlistDate() };
   }
   renderTopbar();
   viewRoot.classList.toggle('song-view', route.view==='song');
-  if (route.view==='home') renderHomeView(route.date || nearestSundayISO());
+  if (route.view==='home') renderHomeView(route.date || nearestUpcomingSetlistDate());
   else if (route.view==='edit') renderEditView(route.songId||null);
   else if (route.view==='song') renderSongView(route.songId);
 }
@@ -3787,7 +3803,7 @@ function renderEditView(songId){
   const existing = songId ? STATE.songs.find(s=>s.id===songId) : null;
   // Preserved so Cancel/Save return to the same date's home view the
   // editor was actually looking at.
-  const cameFromDate = route.date || nearestSundayISO();
+  const cameFromDate = route.date || nearestUpcomingSetlistDate();
 
   const slot = document.getElementById('topbarEditActions');
   slot.innerHTML = `
@@ -4024,7 +4040,7 @@ function defaultSongViewPrefs(song, date){
 let songViewPrefs = {}; // per-song: {mode, target, columns, fitMode, fontSize}
 function renderSongView(songId){
   const song = STATE.songs.find(s=>s.id===songId);
-  if (!song){ go({view:'home', date: nearestSundayISO()}); return; }
+  if (!song){ go({view:'home', date: nearestUpcomingSetlistDate()}); return; }
   const prefs = songViewPrefs[songId] || (songViewPrefs[songId] = defaultSongViewPrefs(song, route.date));
   const {main: titleMain, artist: titleArtist} = splitTitleArtist(song.title);
   function keyBadgeText(){
@@ -4172,9 +4188,9 @@ function renderSongView(songId){
     });
   }
 
-  slot.querySelector('#backBtn').addEventListener('click', ()=> go({view:'home', date: route.date || nearestSundayISO()}));
+  slot.querySelector('#backBtn').addEventListener('click', ()=> go({view:'home', date: route.date || nearestUpcomingSetlistDate()}));
   slot.querySelector('#presentOne').addEventListener('click', ()=>{
-    const presentForDate = route.date || nearestSundayISO();
+    const presentForDate = route.date || nearestUpcomingSetlistDate();
     const ids = STATE.setlists[presentForDate] || [];
     const idx = ids.indexOf(song.id);
     openPresent(idx===-1? [song.id] : ids, idx===-1?0:idx, presentForDate);
@@ -5153,9 +5169,35 @@ function extractSeedSetlistsFromText(text){
 // date, start from whatever's actually live on GitHub right now (fetched
 // moments ago, in publishToGithub()), drop only the ids this editor
 // explicitly removed since their own last-known-published baseline, then
-// add whatever they've locally added that isn't already there. Order isn't
-// preserved perfectly across a concurrent add (new picks land at the end),
-// but nothing anyone else already published gets silently dropped.
+// add whatever they've locally added that isn't already there.
+//
+// Order gets the same "did THIS editor actually change it" treatment as
+// membership, not a blanket "always defer to whatever's live" -- which
+// used to mean a pure reorder (the up/down buttons, no add/remove) was a
+// complete no-op on publish: scaffolding off `server` and only ever
+// filtering/appending by id silently discarded any local reordering and
+// republished the old order every time, reported for real as "순서가
+// 바뀌지 않고 이전으로 돌아간다" (the order doesn't change, reverts to
+// before). Reproduced directly against mergeSetlistsForPublish() with a
+// pure swap-two-entries edit and confirmed the result matched the
+// pre-swap order exactly.
+//
+// Fixed by checking whether this editor's own order, restricted to the
+// songs they share with their baseline, actually differs from baseline's
+// order for those same songs (`reordered` below) -- comparing the full
+// arrays wouldn't work, since any add/remove alone already makes them
+// unequal. If not reordered, this device made no order change of its
+// own, so it keeps deferring to `server`'s order exactly as before
+// (respecting a reorder someone ELSE already published). If reordered,
+// this device's own order becomes the scaffold instead: still drops
+// anything removed server-side since this editor's baseline (never
+// resurrects someone else's removal) and still appends anything added
+// server-side that this editor doesn't know about yet (a concurrent add
+// elsewhere), just arranged in this editor's order rather than the old
+// server order. Two editors reordering the same date concurrently still
+// has no clean resolution -- whoever's publish lands second simply wins
+// for order, the same "last publish wins" tradeoff this project already
+// accepts for a song's own fields.
 function mergeSetlistsForPublish(serverSetlists){
   const baseline = publishedBaselineSetlists();
   const dates = new Set([
@@ -5170,11 +5212,22 @@ function mergeSetlistsForPublish(serverSetlists){
     const base = (baseline && baseline[date]) || [];
     const baseSet = new Set(base);
     const localSet = new Set(local);
-    const added = local.filter(id => !baseSet.has(id));
+    const serverSet = new Set(server);
     const removedSet = new Set(base.filter(id => !localSet.has(id)));
-    const result = server.filter(id => !removedSet.has(id));
+    const localCommon = local.filter(id => baseSet.has(id) && !removedSet.has(id));
+    const baseCommon = base.filter(id => localSet.has(id) && !removedSet.has(id));
+    const reordered = JSON.stringify(localCommon) !== JSON.stringify(baseCommon);
+    let result;
+    if (reordered){
+      result = local.filter(id => serverSet.has(id) || !baseSet.has(id));
+    } else {
+      const added = local.filter(id => !baseSet.has(id));
+      result = server.filter(id => !removedSet.has(id));
+      const resultSet = new Set(result);
+      for (const id of added){ if (!resultSet.has(id)){ result.push(id); resultSet.add(id); } }
+    }
     const resultSet = new Set(result);
-    for (const id of added){ if (!resultSet.has(id)){ result.push(id); resultSet.add(id); } }
+    for (const id of server){ if (!resultSet.has(id) && !removedSet.has(id)){ result.push(id); resultSet.add(id); } }
     if (result.length) merged[date] = result;
   }
   return merged;
