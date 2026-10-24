@@ -906,29 +906,36 @@ function toNashville(text, baseSemitone){
   }
   return out;
 }
-function makeTransform(mode, base, target){
+// showNumbers is independent of mode, not a 4th mode of its own (an
+// earlier version had a standalone "Both" mode that only ever overlaid
+// numbers onto the song's ORIGINAL key -- switching to Transpose dropped
+// the numbers entirely, reported as a real gap: wanting to see a song
+// transposed to a different key while STILL reading the Nashville number
+// for each chord, not just one or the other). Numbers are always relative
+// to the song's own base key (base.semitone) regardless of mode/target --
+// that's the whole point of a Nashville number, the function doesn't
+// change just because you transposed the actual letters.
+function makeTransform(mode, base, target, showNumbers){
   if (mode === 'nashville') return (t)=>toNashville(t, base.semitone);
-  // Numbers+Chords: shows "<number>:<chord name>" as one plain-text token,
-  // not a real superscript -- reuses the exact same column-realignment
-  // machinery every other mode already relies on (realignPair()/
-  // realignChordOnly() just measure whatever string a token transforms
-  // into), so no new alignment logic was needed for this. toNashville(t)
-  // returning t unchanged is how it already signals "not a real chord" for
-  // special tokens (N.C., bar lines |/||, "///", "x2", etc. -- see their
-  // own CHORD_RE-miss fallbacks) -- reused here as the same signal to skip
-  // combining and just pass the token through as-is, rather than producing
-  // a nonsense "N.C.:N.C." duplicate.
-  if (mode === 'nashvilleChords'){
-    return (t) => {
-      const num = toNashville(t, base.semitone);
-      if (num === t) return t;
-      return `${num}:${transposeChord(t, 0, base.preferFlat)}`;
-    };
-  }
   const useTarget = mode === 'transposed';
   const shift = useTarget ? (((target.semitone - base.semitone) % 12) + 12) % 12 : 0;
   const preferFlat = useTarget ? target.preferFlat : base.preferFlat;
-  return (t)=>transposeChord(t, shift, preferFlat);
+  const chordTransform = (t)=>transposeChord(t, shift, preferFlat);
+  if (!showNumbers) return chordTransform;
+  // "<number>:<chord name>" as one plain-text token, not a real
+  // superscript -- reuses the exact same column-realignment machinery
+  // every other mode already relies on (realignPair()/realignChordOnly()
+  // just measure whatever string a token transforms into), so no new
+  // alignment logic was needed for this. toNashville(t) returning t
+  // unchanged is how it already signals "not a real chord" for special
+  // tokens (N.C., bar lines |/||, "///", "x2", etc. -- see their own
+  // CHORD_RE-miss fallbacks) -- reused here as the same signal to skip
+  // combining and just apply the normal chord transform, rather than
+  // producing a nonsense "N.C.:N.C." duplicate.
+  return (t) => {
+    const num = toNashville(t, base.semitone);
+    return num === t ? chordTransform(t) : `${num}:${chordTransform(t)}`;
+  };
 }
 
 // The 5 black-key pitch classes have two valid letter names (e.g. C#/Db);
@@ -2933,9 +2940,9 @@ function sortSongsForLibrary(songs, by, dir){
   const sorted = [...songs].sort((a,b)=> compareSongsForLibrary(a,b,by));
   return dir === 'desc' ? sorted.reverse() : sorted;
 }
-function computeSongRows(song, mode, targetVal){
+function computeSongRows(song, mode, targetVal, showNumbers){
   const blocks = parseBody(song.body, getCollapseBlanks());
-  const transform = makeTransform(mode, songBaseKey(song), parseKeyValue(targetVal));
+  const transform = makeTransform(mode, songBaseKey(song), parseKeyValue(targetVal), showNumbers);
   const rendered = renderBlocks(blocks, transform);
   const rows = [];
   rows.push({cls:'row-title', text: splitTitleArtist(song.title).main});
@@ -2961,12 +2968,10 @@ function computeSongRows(song, mode, targetVal){
 // openKeyModeModal() just below) so both badges read the same way.
 function songKeyBadgeText(song, prefs){
   if (prefs.mode === 'nashville') return '1-7';
-  if (prefs.mode === 'nashvilleChords') return '1-7+C';
-  if (prefs.mode === 'transposed'){
-    const t = parseKeyValue(prefs.target);
-    return keyLabel(t.semitone, t.isMinor, t.preferFlat);
-  }
-  return keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
+  const base = prefs.mode === 'transposed'
+    ? (()=>{ const t = parseKeyValue(prefs.target); return keyLabel(t.semitone, t.isMinor, t.preferFlat); })()
+    : keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
+  return prefs.showNumbers ? `${base}+1-7` : base;
 }
 // The key/mode picker behind both the song view's and Present's key badge
 // -- originally only existed inside the song view, so changing Transpose/
@@ -2986,9 +2991,12 @@ function openKeyModeModal(prefs, onchange){
         <button data-mode="original" class="${prefs.mode==='original'?'active':''}" style="flex:1;">Original</button>
         <button data-mode="transposed" class="${prefs.mode==='transposed'?'active':''}" style="flex:1;">Transpose</button>
         <button data-mode="nashville" class="${prefs.mode==='nashville'?'active':''}" style="flex:1;">Numbers</button>
-        <button data-mode="nashvilleChords" class="${prefs.mode==='nashvilleChords'?'active':''}" style="flex:1;">Both</button>
       </div>
       ${prefs.mode==='transposed' ? `<select id="modalKeySel" style="width:100%;margin-top:12px;padding:9px 10px;border-radius:8px;border:1px solid var(--paper-line);background:var(--paper);color:var(--ink);">${keyOptionsHTML(prefs.target)}</select>` : ''}
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;${prefs.mode==='nashville'?'opacity:.5;':'cursor:pointer;'}">
+        <input type="checkbox" id="modalShowNumbers" ${prefs.showNumbers?'checked':''} ${prefs.mode==='nashville'?'disabled':''}>
+        Also show Nashville numbers
+      </label>
       <div class="modal-actions"><button class="iconbtn primary" id="modalOk">Done</button></div>`;
     modalBox.querySelector('#modalModeSeg').addEventListener('click', (e)=>{
       const btn = e.target.closest('button'); if (!btn) return;
@@ -2998,6 +3006,7 @@ function openKeyModeModal(prefs, onchange){
     });
     const modalKeySel = modalBox.querySelector('#modalKeySel');
     if (modalKeySel) modalKeySel.addEventListener('change', (e)=>{ prefs.target = e.target.value; onchange(); });
+    modalBox.querySelector('#modalShowNumbers').addEventListener('change', (e)=>{ prefs.showNumbers = e.target.checked; onchange(); });
     modalBox.querySelector('#modalOk').addEventListener('click', closeModal);
   }
   paint();
@@ -4166,11 +4175,12 @@ function defaultSongViewPrefs(song, date){
   return {
     mode: overridden ? 'transposed' : 'original',
     target: overrideValue,
+    showNumbers: false,
     columns: getDefaultColumns(),
     fitMode: getDefaultFitMode(),
   };
 }
-let songViewPrefs = {}; // per-song: {mode, target, columns, fitMode, fontSize}
+let songViewPrefs = {}; // per-song: {mode, target, showNumbers, columns, fitMode, fontSize}
 function renderSongView(songId){
   const song = STATE.songs.find(s=>s.id===songId);
   if (!song){ go({view:'home', date: nearestUpcomingSetlistDate()}); return; }
@@ -4337,7 +4347,7 @@ function renderSongView(songId){
   // whatever fixed size happened to be stored from before.
   let lastAutoFontSize = null;
   function repaint(){
-    const rows = filterPresentRows(computeSongRows(song, prefs.mode, prefs.target), getSongViewShowChords(), getSongViewShowSections());
+    const rows = filterPresentRows(computeSongRows(song, prefs.mode, prefs.target, prefs.showNumbers), getSongViewShowChords(), getSongViewShowSections());
     requestAnimationFrame(()=>{
       const boxWidth = chartCard.clientWidth - 28;   // minus 14px+14px horizontal padding
       if (prefs.fitMode === 'wrap'){
@@ -4548,7 +4558,7 @@ function paintPresent(){
   // back on, same as how font size buckets by view.
   document.querySelectorAll('#presentColSeg button').forEach(b=> b.classList.toggle('active', Number(b.dataset.col)===prefs.columns));
   document.getElementById('presentFitToggle').classList.toggle('primary', prefs.fitMode!=='wrap');
-  let rows = computeSongRows(song, prefs.mode, prefs.target);
+  let rows = computeSongRows(song, prefs.mode, prefs.target, prefs.showNumbers);
   // Chords hidden always uses a single full-width column at a large fixed
   // size (scrolling if a song runs long), like a real stage prompter/
   // lyric projector -- not the device's normal chord-view column/fit

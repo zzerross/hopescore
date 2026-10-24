@@ -163,52 +163,64 @@ own data, so every other date's setlist still uses its real key.
 
 ### Key/chord display modes
 
-`makeTransform(mode, base, target)` (section 1, Chord theory) is the one
-place every read-only view's chord rendering funnels through — it returns
-a single `(chordToken) => string` function, applied per chord token by
-`renderBlocks()`/`realignPair()`/`realignChordOnly()` (section 3). Four
-modes exist, picked via the song view's/Present's key badge
-(`openKeyModal()`, section 7) — all four reuse the exact same column-
-realignment machinery, since that machinery only ever cares about the
-actual rendered width of whatever string a token turns into, never which
-mode produced it:
+`makeTransform(mode, base, target, showNumbers)` (section 1, Chord theory)
+is the one place every read-only view's chord rendering funnels through —
+it returns a single `(chordToken) => string` function, applied per chord
+token by `renderBlocks()`/`realignPair()`/`realignChordOnly()` (section 3).
+`mode` is three mutually exclusive options, picked via the `#modalModeSeg`
+segmented buttons in the song view's/Present's key modal
+(`openKeyModeModal()`, section 6):
 
 - `original` — `transposeChord(t, 0, base.preferFlat)`: the song's own
   key, just respelled per its `preferFlat` choice.
 - `transposed` — `transposeChord(t, shift, target.preferFlat)`: shifted to
   the chosen target key.
 - `nashville` — `toNashville(t, base.semitone)`: scale-degree numbers
-  relative to the song's own key (never the Transpose target — Numbers
-  mode and Transpose mode are mutually exclusive, not composable).
-- `nashvilleChords` (toolbar label "Both") — `"<number>:<chord>"` as one
-  plain-text token, e.g. `"3m:Em"`. Deliberately not a real HTML
-  superscript: plain concatenation needed zero new alignment logic, since
-  it's still just one wider token through the same realign path every
-  other mode already uses. Skips combining for anything `toNashville()`
-  didn't recognize as a real chord (bar lines, `N.C.`, `///`, `x2`, etc. —
-  detected via `num === t`, i.e. `toNashville` returned the token
-  unchanged, the same fallback those tokens already hit in every other
-  mode) so those render as themselves instead of a nonsense `"N.C.:N.C."`
-  duplicate.
+  relative to the song's own key (never the Transpose target — a
+  Nashville number represents the chord's *function*, which doesn't
+  change just because you transposed the actual letters).
 
-**Pre-existing quirk `nashvilleChords` made visible enough to fix**:
+`showNumbers` is a separate, independent boolean (the modal's "Also show
+Nashville numbers" checkbox, disabled/irrelevant when `mode` is already
+`'nashville'`) — **not** a 4th mode. An earlier version made "number +
+chord together" its own standalone 4th mode (`nashvilleChords`, labeled
+"Both" in the toolbar), but that only ever overlaid numbers onto the
+song's *original* key — switching to Transpose dropped the numbers
+entirely, reported directly as a real gap: wanting to read a song
+transposed into whatever key it's actually being played in, while still
+seeing each chord's Nashville number for reference, not having to choose
+one or the other. Decoupling them fixes that: `showNumbers` combines with
+*either* `original` or `transposed` (e.g. transposed to E with numbers on
+renders `"3m:F#m"` — `3m` is the function relative to the song's own key,
+`F#m` is the actual transposed chord to play). When `showNumbers` is true,
+the transform still reuses the exact same column-realignment machinery
+every mode already relies on — `"<number>:<chord>"` is deliberately one
+wider plain-text token, not a real HTML superscript, so no new alignment
+logic was needed. Skips combining for anything `toNashville()` didn't
+recognize as a real chord (bar lines, `N.C.`, `///`, `x2`, etc. — detected
+via `num === t`, i.e. `toNashville` returned the token unchanged, the same
+fallback those tokens already hit normally) so those render as themselves
+instead of a nonsense `"N.C.:N.C."` duplicate. The key badge reflects both
+independently too (`songKeyBadgeText()`): `"E+1-7"` for transposed-to-E
+with numbers on, just `"E"` without.
+
+**Pre-existing quirk this combined display made visible enough to fix**:
 `toNashville()` used to concatenate `NNS_TABLE[diff] + qual` with no
 separator — for a chord whose quality suffix starts with a digit (`G7` in
 key of C: scale degree `5` + quality `7`), that read as `"57"`, one
 two-digit number instead of "5, dominant 7th" (worse for `Bb7`: degree
 `"b7"` + quality `"7"` → `"b77"`, doubly ambiguous since the degree
 itself can also end in a digit). Plain Numbers mode always had this;
-`nashvilleChords` putting it right next to the real chord name
-(`"57:G7"`) just made it hard to miss. Fixed by inserting a `-` only when
-`qual` starts with a digit (`/^[0-9]/.test(qual)`) — `G7` → `"5-7"`,
-`Bb7` → `"b7-7"` — while a letter-leading quality (`m`, `sus`, `maj`,
-`dim`, `aug`, ...) stays exactly as before (`"2m7"`, `"5sus4"`), since
-those were never ambiguous without a letter already separating the two
-parts. Applies everywhere `toNashville()` is used, not just
-`nashvilleChords` — plain Numbers mode's own long-standing glued-digits
-problem (this surfaced for real on the seed data's own `"Holy is The
-Lord"`, a G2 chord in key D rendering as `"42"`) is fixed by the same one
-change.
+showing the number right next to the real chord name just made it hard
+to miss. Fixed by inserting a `-` only when `qual` starts with a digit
+(`/^[0-9]/.test(qual)`) — `G7` → `"5-7"`, `Bb7` → `"b7-7"` — while a
+letter-leading quality (`m`, `sus`, `maj`, `dim`, `aug`, ...) stays
+exactly as before (`"2m7"`, `"5sus4"`), since those were never ambiguous
+without a letter already separating the two parts. Applies everywhere
+`toNashville()` is used, not just the combined display — plain Numbers
+mode's own long-standing glued-digits problem (this surfaced for real on
+the seed data's own `"Holy is The Lord"`, a G2 chord in key D rendering
+as `"42"`) is fixed by the same one change.
 
 ### Chords/Parts show-hide toggle: present in Chords view and Present, not Print
 
