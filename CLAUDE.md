@@ -608,6 +608,28 @@ now fixed, but worth understanding why):
   new "what date should I show" call site, route it through
   `nearestUpcomingSetlistDate()` too, not `nearestSundayISO()`, unless
   it's genuinely one of these two exceptions.
+- **The ‹/› date arrows step between actual setlist dates, not a flat
+  7 days.** `stepToAdjacentSetlistDate(date, direction)` (next to
+  `nearestUpcomingSetlistDate()`) looks for the nearest *other* date (in
+  the given direction) that already has a setlist, and only falls back to
+  the original `addWeeksISO(date, ±1)` when there isn't one — so the
+  arrows still reach a blank future/past week to plan a new setlist or
+  review an empty one, same as before this existed. Added for the same
+  reason as `nearestUpcomingSetlistDate()` above, reported for real on
+  the same out-of-band-setlist scenario: with a Saturday setlist (10/24)
+  *and* the very next day's Sunday setlist (10/25) both already built,
+  `›` from 10/24 used to skip straight past 10/25 to 10/31 (10/24 + 7)
+  — so there was no way to step from "today's setlist" to "tomorrow's,
+  already-built setlist" with the button that looks like it should do
+  exactly that. This also fixes a separate-sounding but same-root
+  complaint: wanting to move on to tomorrow's setlist once today's
+  service is over kept landing back on today's instead, because nothing
+  about that date becomes "today's setlist is done" on its own — a
+  time-of-day heuristic for that was considered and rejected (fragile if
+  a service runs long, and nobody wants the app silently jumping away
+  from today's setlist while it's still being used); a single explicit
+  `›` tap that actually goes to the next *setlist* solves it instead,
+  with no new setting needed.
 - **`mergeSetlistsForPublish()` used to silently discard a pure
   reorder.** Scaffolding the merged result off `server` and only ever
   filtering by id (to drop local removals) or appending by id (to add

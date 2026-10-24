@@ -1100,6 +1100,21 @@ function nearestUpcomingSetlistDate(){
   const upcoming = [...datesWithSetlists()].filter(d => d >= today).sort();
   return upcoming.length ? upcoming[0] : nearestSundayISO();
 }
+// The home view's ‹/› date arrows: steps to the nearest OTHER date that
+// already has a setlist, in the given direction, rather than always
+// jumping exactly 7 days -- reported for real with an out-of-band
+// Saturday setlist (10/24) and the very next day's Sunday setlist (10/25)
+// already built too, where '>' skipped straight past 10/25 to 10/31
+// instead. Falls back to the original flat week step when there's no
+// such date in that direction, so the arrows can still reach a blank
+// future/past week to start planning a new setlist or review an empty
+// one -- this only reorders which date a single click lands on among
+// dates that matter, it doesn't remove the ability to browse freely.
+function stepToAdjacentSetlistDate(date, direction){
+  const dates = [...datesWithSetlists()].sort();
+  const candidates = direction > 0 ? dates.filter(d => d > date) : dates.filter(d => d < date).reverse();
+  return candidates.length ? candidates[0] : addWeeksISO(date, direction);
+}
 // One calendar-grid's worth of cells for the month containing monthStartISO:
 // null for the leading blanks before day 1 (so day 1 lands in the right
 // weekday column), then one ISO date per day of the month.
@@ -3444,7 +3459,7 @@ function renderHomeView(date){
 
   const slot = document.getElementById('topbarHomeActions');
   slot.innerHTML = `
-    <button class="iconbtn" id="datePrev" title="Previous week">‹</button>
+    <button class="iconbtn" id="datePrev" title="Previous setlist (or a week back if none)">‹</button>
     <div class="date-control">
       <button class="date-btn" id="dateBtn" title="Pick a date">${escapeHtml(formatDateHeading(date))}</button>
       <div class="calendar-popover" id="calendarPopover" hidden>
@@ -3458,7 +3473,7 @@ function renderHomeView(date){
         <button class="calendar-today-btn" id="calToday">This week</button>
       </div>
     </div>
-    <button class="iconbtn" id="dateNext" title="Next week">›</button>
+    <button class="iconbtn" id="dateNext" title="Next setlist (or a week ahead if none)">›</button>
     <div class="topbar-divider"></div>
     <button class="iconbtn primary" id="btnPresentHome" title="Present fullscreen">▶</button>
     <button class="iconbtn" id="btnShareSetlist" title="Share this setlist"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
@@ -3764,8 +3779,8 @@ function renderHomeView(date){
   } else {
     slot.querySelector('#btnEditorLogin').addEventListener('click', ()=> openGhSettingsModal(()=> render()));
   }
-  slot.querySelector('#datePrev').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,-1)}));
-  slot.querySelector('#dateNext').addEventListener('click', ()=> go({view:'home', date: addWeeksISO(date,1)}));
+  slot.querySelector('#datePrev').addEventListener('click', ()=> go({view:'home', date: stepToAdjacentSetlistDate(date,-1)}));
+  slot.querySelector('#dateNext').addEventListener('click', ()=> go({view:'home', date: stepToAdjacentSetlistDate(date,1)}));
 
   // Calendar popover: shows today and every date with a saved setlist
   // marked, so an editor or viewer can see at a glance which Sundays (or
