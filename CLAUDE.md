@@ -200,9 +200,13 @@ logic was needed. Skips combining for anything `toNashville()` didn't
 recognize as a real chord (bar lines, `N.C.`, `///`, `x2`, etc. — detected
 via `num === t`, i.e. `toNashville` returned the token unchanged, the same
 fallback those tokens already hit normally) so those render as themselves
-instead of a nonsense `"N.C.:N.C."` duplicate. The key badge reflects both
-independently too (`songKeyBadgeText()`): `"E+1-7"` for transposed-to-E
-with numbers on, just `"E"` without.
+instead of a nonsense `"N.C.:N.C."` duplicate. `songKeyBadgeText()`
+deliberately does **not** reflect `showNumbers` at all — the badge just
+reads `"E"` whether numbers are on or off for a transposed-to-E song; a
+`"+1-7"` suffix was tried and dropped, since the numbers are already
+visible in the chart itself the moment they're on, so the badge would
+just be repeating something already in view, not surfacing new
+information.
 
 **Pre-existing quirk this combined display made visible enough to fix**:
 `toNashville()` used to concatenate `NNS_TABLE[diff] + qual` with no

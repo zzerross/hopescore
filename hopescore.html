@@ -2966,12 +2966,17 @@ function computeSongRows(song, mode, targetVal, showNumbers){
 // What a key badge button should read for a given song + songViewPrefs
 // entry -- shared by the regular song view and Present (see
 // openKeyModeModal() just below) so both badges read the same way.
+// showNumbers doesn't change what the badge reads -- the numbers are
+// already visible in the chart itself the moment they're on, so a "+1-7"
+// suffix here would just be telling you something you can already see,
+// not new information the badge needs to carry.
 function songKeyBadgeText(song, prefs){
   if (prefs.mode === 'nashville') return '1-7';
-  const base = prefs.mode === 'transposed'
-    ? (()=>{ const t = parseKeyValue(prefs.target); return keyLabel(t.semitone, t.isMinor, t.preferFlat); })()
-    : keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
-  return prefs.showNumbers ? `${base}+1-7` : base;
+  if (prefs.mode === 'transposed'){
+    const t = parseKeyValue(prefs.target);
+    return keyLabel(t.semitone, t.isMinor, t.preferFlat);
+  }
+  return keyLabel(song.keySemitone, !!song.keyIsMinor, songBaseKey(song).preferFlat);
 }
 // The key/mode picker behind both the song view's and Present's key badge
 // -- originally only existed inside the song view, so changing Transpose/
