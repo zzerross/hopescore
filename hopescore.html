@@ -235,6 +235,15 @@
     background:var(--surface); color:var(--ink); font-size:12px; cursor:pointer;
   }
   .calendar-today-btn:hover{ border-color:var(--focus); }
+  .calendar-cutoff-row{
+    display:flex; align-items:center; justify-content:space-between; gap:6px;
+    margin-top:8px; padding-top:8px; border-top:1px solid var(--paper-line);
+    font-size:11px; color:var(--muted);
+  }
+  .calendar-cutoff-row input[type="time"]{
+    font-size:12px; border:1px solid var(--paper-line); border-radius:6px;
+    padding:3px 4px; background:var(--surface); color:var(--ink);
+  }
   .setlist-row{ grid-template-columns:30px 20px 1fr auto; }
   .setlist-row.editable{ grid-template-columns:30px 20px 1fr auto auto; }
   .setlist-row .pill, .library-row .pill{ flex-shrink:0; }
@@ -1095,9 +1104,29 @@ function datesWithSetlists(){
 // default -- whenever nothing's been planned yet for any upcoming date,
 // so the common case (most weeks only ever have the one Sunday setlist)
 // is completely unchanged.
+// Device-local: what time of day "today's setlist" stops counting as the
+// one to default to -- e.g. a service that's over by early afternoon
+// shouldn't keep being the landing page for the rest of the day. "HH:MM"
+// (24h), matching <input type="time">'s own value format directly so the
+// calendar popover's control (see paintCalendar()) can read/write it with
+// no conversion. Defaults to 2pm -- adjustable per device for the rare day
+// that runs later, via the small control under the calendar's "This week"
+// button; there's no per-setlist override, since a single adjustable
+// default covers the common case without needing to remember to set it
+// for every date.
+function getHomeDateCutoff(){ return STATE.settings.homeDateCutoff || '14:00'; }
+function setHomeDateCutoff(v){
+  STATE.settings.homeDateCutoff = v;
+  saveState();
+}
+function isTodayPastCutoff(){
+  const [h,m] = getHomeDateCutoff().split(':').map(Number);
+  const now = new Date();
+  return now.getHours()*60 + now.getMinutes() >= h*60 + m;
+}
 function nearestUpcomingSetlistDate(){
   const today = todayISO();
-  const upcoming = [...datesWithSetlists()].filter(d => d >= today).sort();
+  const upcoming = [...datesWithSetlists()].filter(d => d > today || (d === today && !isTodayPastCutoff())).sort();
   return upcoming.length ? upcoming[0] : nearestSundayISO();
 }
 // The home view's ‹/› date arrows: steps to the nearest OTHER date that
@@ -3308,12 +3337,25 @@ let editDirtyCheck = null;
 // days in the future -- a setlist staged for a Sunday or any other day
 // beyond this week -- would *also* satisfy well before it's actually
 // stale). This never touches a date that's still current or upcoming.
+//
+// Also catches a second, narrower kind of staleness: a tab left open
+// *within* the same day that crosses getHomeDateCutoff() (see
+// nearestUpcomingSetlistDate()) while still showing today's now-finished
+// setlist -- lastKnownPastCutoff tracks whether the cutoff had already
+// passed as of the last check, so this only fires once, right when it's
+// newly crossed, not on every later visibility/focus event that same
+// afternoon/evening.
 let lastKnownTodayISO = todayISO();
+let lastKnownPastCutoff = isTodayPastCutoff();
 function refreshStaleHomeDateIfNeeded(){
   const today = todayISO();
-  if (today === lastKnownTodayISO) return;
+  const dayChanged = today !== lastKnownTodayISO;
+  const pastCutoff = isTodayPastCutoff();
+  const cutoffJustCrossed = !dayChanged && !lastKnownPastCutoff && pastCutoff;
   lastKnownTodayISO = today;
-  if (route.view === 'home' && route.date < today){
+  lastKnownPastCutoff = pastCutoff;
+  if (!dayChanged && !cutoffJustCrossed) return;
+  if (route.view === 'home' && (route.date < today || (route.date === today && cutoffJustCrossed))){
     route.date = nearestUpcomingSetlistDate();
     render();
   }
@@ -3464,6 +3506,10 @@ function renderHomeView(date){
         <div class="calendar-weekdays"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div>
         <div class="calendar-grid" id="calendarGrid"></div>
         <button class="calendar-today-btn" id="calToday">This week</button>
+        <div class="calendar-cutoff-row" title="After this time, today's setlist stops being the default landing page -- the next one shows instead">
+          <span>Today's setlist ends</span>
+          <input type="time" id="homeDateCutoffInput">
+        </div>
       </div>
     </div>
     <button class="iconbtn" id="dateNext" title="Next setlist (or a week ahead if none)">›</button>
@@ -3817,6 +3863,12 @@ function renderHomeView(date){
   slot.querySelector('#calMonthPrev').addEventListener('click', ()=>{ calMonth = addMonthsISO(calMonth,-1); paintCalendar(); });
   slot.querySelector('#calMonthNext').addEventListener('click', ()=>{ calMonth = addMonthsISO(calMonth,1); paintCalendar(); });
   slot.querySelector('#calToday').addEventListener('click', ()=>{ popover.hidden = true; go({view:'home', date: nearestSundayISO()}); });
+  const cutoffInput = slot.querySelector('#homeDateCutoffInput');
+  cutoffInput.value = getHomeDateCutoff();
+  cutoffInput.addEventListener('click', (e)=> e.stopPropagation());
+  cutoffInput.addEventListener('change', (e)=>{
+    if (e.target.value) setHomeDateCutoff(e.target.value);
+  });
 
   viewRoot.innerHTML=''; viewRoot.appendChild(wrap);
 }

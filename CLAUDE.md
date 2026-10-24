@@ -621,15 +621,43 @@ now fixed, but worth understanding why):
   `›` from 10/24 used to skip straight past 10/25 to 10/31 (10/24 + 7)
   — so there was no way to step from "today's setlist" to "tomorrow's,
   already-built setlist" with the button that looks like it should do
-  exactly that. This also fixes a separate-sounding but same-root
-  complaint: wanting to move on to tomorrow's setlist once today's
-  service is over kept landing back on today's instead, because nothing
-  about that date becomes "today's setlist is done" on its own — a
-  time-of-day heuristic for that was considered and rejected (fragile if
-  a service runs long, and nobody wants the app silently jumping away
-  from today's setlist while it's still being used); a single explicit
-  `›` tap that actually goes to the next *setlist* solves it instead,
-  with no new setting needed.
+  exactly that. This was first thought to also cover a separate-sounding
+  complaint — wanting to land on tomorrow's setlist once today's service
+  was over, instead of today's again — on the theory that a single
+  explicit `›` tap solves it without needing any time-of-day logic. That
+  turned out to only be half the story: it fixes manual navigation once
+  you're already looking at the page, but says nothing about what shows
+  on a fresh *open* of the app, which is the concept the home view was
+  actually supposed to deliver on ("open the app, see what's next") and
+  the part that was actually reported as the problem. See the next bullet
+  for the fix that actually covers that case.
+- **`getHomeDateCutoff()`/`isTodayPastCutoff()` decide when "today's
+  setlist" stops being today's default**, since the arrows above only
+  help once you're already on the page. Device-local, `"HH:MM"` (24h,
+  default `14:00`), adjustable via the small time input under the
+  calendar popover's "This week" button (`#homeDateCutoffInput`,
+  `paintCalendar()`'s setup code). `nearestUpcomingSetlistDate()` now
+  excludes today from its candidates once `isTodayPastCutoff()` is true,
+  falling through to whatever's actually next (or `nearestSundayISO()` if
+  nothing else is planned, same final fallback as before) — this is what
+  makes a fresh open of the app in the afternoon land on tomorrow's
+  setlist instead of today's finished one, which is the part the ‹/›
+  arrow fix above couldn't reach. A single global cutoff rather than a
+  per-setlist end time was a deliberate simplicity choice, explicitly
+  confirmed rather than assumed — the rare day that runs long is expected
+  to just nudge the one shared setting for that day, not require
+  remembering to fill in a time on every setlist.
+  `refreshStaleHomeDateIfNeeded()` (same section) also tracks
+  `lastKnownPastCutoff` alongside `lastKnownTodayISO`, so a tab left open
+  *within* the same day that crosses the cutoff while still showing
+  today's setlist gets caught too, not just the already-handled midnight
+  rollover — `cutoffJustCrossed` fires exactly once, right when the
+  cutoff is newly passed, not on every later visibility/focus event that
+  same evening. `nearestSundayISO()` itself is intentionally untouched by
+  any of this — it's real-time-based by construction (`new Date()`
+  directly), so it already reflects "right now" on every call; the cutoff
+  concept only needed adding to the layer that decides whether *today
+  specifically* should still count as a candidate.
 - **`mergeSetlistsForPublish()` used to silently discard a pure
   reorder.** Scaffolding the merged result off `server` and only ever
   filtering by id (to drop local removals) or appending by id (to add
