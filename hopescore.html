@@ -2641,6 +2641,24 @@ function setPresentShowSections(v){
   STATE.settings.presentShowSections = !!v;
   saveState();
 }
+// Same idea as Present's own showChords/showSections, independently for
+// the regular Chords view -- device-wide, not per-song, matching how
+// Present's own toggle works. Unlike Present, this doesn't also switch
+// the font-size bucket to 'prompter' when chords are hidden -- that's a
+// deliberate Present-only refinement (see its own fontView switch in
+// paintPresent()), not something this toggle tries to replicate; keeping
+// the regular Chords view on its single 'chords' bucket regardless is the
+// simpler, lower-risk behavior for what was actually asked for here.
+function getSongViewShowChords(){ return STATE.settings.songViewShowChords !== false; }
+function setSongViewShowChords(v){
+  STATE.settings.songViewShowChords = !!v;
+  saveState();
+}
+function getSongViewShowSections(){ return STATE.settings.songViewShowSections !== false; }
+function setSongViewShowSections(v){
+  STATE.settings.songViewShowSections = !!v;
+  saveState();
+}
 // Whether Present's toolbar (counter/title/mode/font/Close) is hidden --
 // device-wide, not per-mode, since this is really about what kind of
 // screen this device is: an operator's own control screen keeps it
@@ -4079,6 +4097,8 @@ function renderSongView(songId){
     <span class="topbar-song-title">${escapeHtml(titleMain)}</span>
     ${titleArtist? `<span class="topbar-song-artist">by ${escapeHtml(titleArtist)}</span>` : ''}
     <div class="topbar-divider"></div>
+    <button class="iconbtn ${getSongViewShowChords()?'primary':''}" id="songChordsToggle" title="Show/hide chords">Chords</button>
+    <button class="iconbtn ${getSongViewShowSections()?'primary':''}" id="songSectionsToggle" title="Show/hide part labels (Verse, Chorus…)">Parts</button>
     <div class="seg" id="colSeg">
       <button data-col="1" class="${prefs.columns===1?'active':''}">1</button>
       <button data-col="2" class="${prefs.columns===2?'active':''}">2</button>
@@ -4210,7 +4230,7 @@ function renderSongView(songId){
   // whatever fixed size happened to be stored from before.
   let lastAutoFontSize = null;
   function repaint(){
-    const rows = computeSongRows(song, prefs.mode, prefs.target);
+    const rows = filterPresentRows(computeSongRows(song, prefs.mode, prefs.target), getSongViewShowChords(), getSongViewShowSections());
     requestAnimationFrame(()=>{
       const boxWidth = chartCard.clientWidth - 28;   // minus 14px+14px horizontal padding
       if (prefs.fitMode === 'wrap'){
@@ -4275,6 +4295,16 @@ function renderSongView(songId){
     modalBackdrop.classList.add('open');
   }
 
+  document.getElementById('songChordsToggle').addEventListener('click', ()=>{
+    setSongViewShowChords(!getSongViewShowChords());
+    document.getElementById('songChordsToggle').classList.toggle('primary', getSongViewShowChords());
+    repaint();
+  });
+  document.getElementById('songSectionsToggle').addEventListener('click', ()=>{
+    setSongViewShowSections(!getSongViewShowSections());
+    document.getElementById('songSectionsToggle').classList.toggle('primary', getSongViewShowSections());
+    repaint();
+  });
   document.getElementById('colSeg').addEventListener('click', (e)=>{
     const btn = e.target.closest('button'); if (!btn) return;
     prefs.columns = Number(btn.dataset.col);

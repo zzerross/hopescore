@@ -210,6 +210,44 @@ problem (this surfaced for real on the seed data's own `"Holy is The
 Lord"`, a G2 chord in key D rendering as `"42"`) is fixed by the same one
 change.
 
+### Chords/Parts show-hide toggle: present in Chords view and Present, not Print
+
+Present has always had `Chords`/`Parts` toolbar buttons
+(`getPresentShowChords()`/`getPresentShowSections()`, device-wide
+`STATE.settings`) to drop chord rows (and the title/description, since
+they're either shown elsewhere or just clutter for lyrics-only reading —
+`filterPresentRows()`, section 8) or section-label rows for a lyrics-only
+reading mode. The regular Chords view (`renderSongView()`) didn't have an
+equivalent until it was pointed out as an inconsistency — ironic for the
+view literally called "Chords," having no way to hide them. Added
+`getSongViewShowChords()`/`getSongViewShowSections()` (next to Present's
+own, same device-wide-not-per-song shape) and two toolbar buttons
+(`#songChordsToggle`/`#songSectionsToggle`), reusing `filterPresentRows()`
+directly in `repaint()` rather than writing a second filter — it was
+already a generic `(rows, showChords, showSections) => rows` function
+despite the Present-specific name, nothing about it was actually tied to
+Present.
+
+Deliberately **not** replicated: Present also switches its font-size
+*bucket* to `'prompter'` (bigger default size) when chords are hidden,
+treating chords-off as a dedicated stage-prompter mode (see
+`paintPresent()`'s own `fontView` switch). The Chords view's toggle
+doesn't do this — it stays on the single `'chords'` bucket regardless,
+only filtering which rows render. Revisit this (and the symmetric
+question of whether `getSongViewShowChords()`/`getPresentShowChords()`
+should actually be the *same* setting rather than two independent ones)
+if it turns out people expect the two toggles to behave identically, not
+just look identical.
+
+Print remains deliberately excluded — same reasoning as it being excluded
+from the key/chord display modes above: giving Print a lyrics-only or
+parts-only mode would be a new capability for a view that currently just
+prints the chart as written, not an extension of something it already has
+(print already has its own `showChords`/`showSections` in `printPrefs`,
+team-published rather than device-local, but that's a batch-wide printed-
+output setting answering "do we want chords on the printed sheet at all,"
+not the same decision as toggling a single live view mid-read).
+
 ### Song body text: blank lines are canonicalized on save
 
 A song's `body` is free-form chord/lyric chart text — see `parseBody()`
