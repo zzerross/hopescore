@@ -561,6 +561,43 @@ now fixed, but worth understanding why):
   root (e.g. referencing a footnote by position rather than describing the
   chord itself — though nothing elsewhere in this app has a footnote/
   annotation system to check that against), this would need revisiting.
+
+  A fourth gap, same bug class, turned up later from a real song ("I Speak
+  Jesus," an Intro/Interlude melody-note/단음 line meant to show which
+  single notes to play rather than full chords): `( F# - G - A - C# D |
+  F# - G - A - C# D)` and `( G  - A - G - C# D | F#               )`.
+  Whitespace-tokenizing either line produces a standalone `"("` token (a
+  space right after it) and either a closing paren glued to the last note
+  with no opening paren on that same token (`"D)"`) or a fully standalone
+  `")"` (separated from the last note by extra spaces) — three shapes none
+  of which `isChordToken()` recognized: a bare `"("`/`")"` is length 1, so
+  it can never satisfy `unwrapParens()`'s `text.length > 2` matched-pair
+  check, and `"D)"` has no `"("` on its own token for that same check to
+  find. One failing token anywhere on the line drops the *whole* line to
+  `lyricOnly` (the same trap as always), so every melody note on both
+  lines silently stopped transposing, while the chord lines around them
+  (which happened to have both parens on the same token, or none at all)
+  transposed fine — making it look like "melody notation doesn't
+  transpose" as a category, when really it was these two specific
+  half-glued/standalone paren shapes. Fixed with three small additions,
+  deliberately parallel to the existing fixes above rather than a new
+  mechanism: a bare `"("`/`")"` token added straight to `SPECIAL_TOKENS`
+  (decorative, passed through untouched, same role as the `|` bar-line
+  tokens already there); and two new helpers, `unwrapLeadingParen()`/
+  `unwrapTrailingParen()`, for the half-glued case — distinct from
+  `unwrapParens()` because that one specifically requires *both* parens on
+  the same token, whereas these fire when only one side is there (`"(F#"`
+  → strip the leading `"("`, carry it back on display; `"D)"` → strip the
+  trailing `")"`, same). Wired into `isChordToken()`, `transposeChord()`,
+  and `toNashville()` right alongside the existing `unwrapParens()`/
+  `unwrapAsterisk()` checks, same pattern each time. Verified directly
+  against the reported lines (both now parse as `chordOnly` blocks and
+  transpose/Nashville-convert correctly, confirmed in the actual song view
+  with a real transpose applied, not just the standalone token functions)
+  and with a full-library audit (every `lyricOnly` block that's mostly
+  chord-shaped tokens, the same symptom this whole bug class produces) —
+  came back empty, so no other song in the seed library was silently
+  hitting this one.
 - **YouTube embeds use `youtube.com`, not `youtube-nocookie.com`, on
   purpose.** The privacy-enhanced `-nocookie` domain withholds the
   viewer's own YouTube session from the embed by design, which means a

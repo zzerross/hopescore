@@ -799,7 +799,12 @@ const QUAL_STRICT_RE = /^[0-9]*(?:(?:maj|min|dim|aug|sus|add|m|b5|#5|b9|#9|b13|#
 // of these look-alike dashes (seen for real: "C - Am - G - Em - Am – D",
 // every separator a plain "-" except the last, an en dash). Same role as
 // "-", just a different Unicode character for it.
-const SPECIAL_TOKENS = new Set(['N.C.','NC','%','-','–','—','|','||','|:',':|','||:',':||']);
+// A bare "(" or ")" on its own, with nothing glued to it -- seen in a
+// melody/single-note line written like "( F# - G - A | F# )" where the
+// parens just bracket a whole run of notes rather than wrapping one chord
+// the way "(Edim)" does. Decorative, pass through untouched, same role as
+// the bar-line tokens above.
+const SPECIAL_TOKENS = new Set(['N.C.','NC','%','-','–','—','|','||','|:',':|','||:',':||','(',')']);
 // A run of one or more "/"s is slash/rhythm notation for "hold the previous
 // chord this many more beats" -- "/" for one extra beat same as several
 // spaced-out ones ("A / / /"), but charts just as commonly glue them into a
@@ -850,6 +855,21 @@ function unwrapParens(text){
 function unwrapAsterisk(text){
   return (text.length > 1 && text[text.length-1]==='*') ? text.slice(0,-1) : null;
 }
+// unwrapParens() above only unwraps when BOTH the opening and closing paren
+// land on the SAME token ("(Edim)"). A melody/single-note line split across
+// a bar line commonly glues just one side instead -- the opening paren to
+// the first note ("(F#", no closing paren anywhere on that token) or the
+// closing paren to the last ("D)", no opening paren on that token), with
+// the other half of the pair off on a standalone token (or on a different
+// line entirely). These two handle that half-glued shape, carrying the
+// loose paren through on display same as unwrapParens() does for a matched
+// pair.
+function unwrapLeadingParen(text){
+  return (text.length > 1 && text[0]==='(' && text[text.length-1]!==')') ? text.slice(1) : null;
+}
+function unwrapTrailingParen(text){
+  return (text.length > 1 && text[text.length-1]===')' && text[0]!=='(') ? text.slice(0,-1) : null;
+}
 function isChordToken(text){
   if (baseChordToken(text)) return true;
   if (SPECIAL_TOKENS.has(text)) return true;
@@ -858,6 +878,10 @@ function isChordToken(text){
   if (repeatedChordUnit(text)) return true;
   const inner = unwrapParens(text);
   if (inner !== null) return isChordToken(inner);
+  const leadInner = unwrapLeadingParen(text);
+  if (leadInner !== null) return isChordToken(leadInner);
+  const trailInner = unwrapTrailingParen(text);
+  if (trailInner !== null) return isChordToken(trailInner);
   const starInner = unwrapAsterisk(text);
   return starInner !== null && isChordToken(starInner);
 }
@@ -865,6 +889,10 @@ function isChordToken(text){
 function transposeChord(text, shift, preferFlat){
   const inner = unwrapParens(text);
   if (inner !== null) return '(' + transposeChord(inner, shift, preferFlat) + ')';
+  const leadInner = unwrapLeadingParen(text);
+  if (leadInner !== null) return '(' + transposeChord(leadInner, shift, preferFlat);
+  const trailInner = unwrapTrailingParen(text);
+  if (trailInner !== null) return transposeChord(trailInner, shift, preferFlat) + ')';
   const starInner = unwrapAsterisk(text);
   if (starInner !== null) return transposeChord(starInner, shift, preferFlat) + '*';
   const rep = repeatedChordUnit(text);
@@ -880,6 +908,10 @@ const NNS_TABLE = ['1','b2','2','b3','3','4','#4','5','b6','6','b7','7'];
 function toNashville(text, baseSemitone){
   const inner = unwrapParens(text);
   if (inner !== null) return '(' + toNashville(inner, baseSemitone) + ')';
+  const leadInner = unwrapLeadingParen(text);
+  if (leadInner !== null) return '(' + toNashville(leadInner, baseSemitone);
+  const trailInner = unwrapTrailingParen(text);
+  if (trailInner !== null) return toNashville(trailInner, baseSemitone) + ')';
   const starInner = unwrapAsterisk(text);
   if (starInner !== null) return toNashville(starInner, baseSemitone) + '*';
   const rep = repeatedChordUnit(text);
