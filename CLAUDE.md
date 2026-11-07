@@ -226,6 +226,43 @@ mode's own long-standing glued-digits problem (this surfaced for real on
 the seed data's own `"Holy is The Lord"`, a G2 chord in key D rendering
 as `"42"`) is fixed by the same one change.
 
+### Melody-note / lone-optional-chord rows render a shade paler
+
+A chord-only row that's wrapped end to end in its own outer parens —
+a melody/single-note (단음) cue like `( F# - G - A - C# D | F# )`, or a
+single optional chord alone on its own line like `(Edim)` — reads as
+secondary, not the main progression to actually play. `computeSongRows()`
+(section 6) flags this with a `melody: true` field on the row object,
+detected on the row's own already-rendered text (`b.chordLine.trim()`
+starting with `"("` and ending with `")"` — checked post-transform, so it
+holds regardless of Original/Transpose/Numbers mode) — a row with *some*
+chords in parens and others not (e.g. `"G (Edim) D"`) is correctly left
+alone, since only the two outermost characters are checked, not every
+token. `rowToLineEl()` (the one function every read-only view funnels
+through to turn a row into a DOM element — Chords, Present, and Print all
+call it) adds a `row-chord-melody` class alongside the row's normal
+`row-chord` class when this flag is set; the CSS for it is one rule,
+`opacity:.62` and nothing else, deliberately not a new hardcoded color —
+it just fades whatever `.row-chord`'s color already resolved to (light
+mode's blue, dark mode's lighter blue, Present's black-theme blue, print's
+blue), so one rule covers every theme/view combination instead of needing
+a separate override in each. `wrapRows()`'s single-long-row wrap branch
+(used by the print view's column layout, and by the on-screen Chords/
+Present layout when Auto-fit has to wrap an outlier-wide line) carries
+`melody` through onto each wrapped segment — easy to miss, since that
+branch rebuilds a fresh row object per segment rather than reusing the
+original, and dropping the field there would make a wrapped continuation
+line of a melody row suddenly render at full opacity.
+
+A full-library audit of which rows this flags turned up two more real
+cases beyond the melody-note lines it was built for: a bare repeat-count
+annotation written as its own row, `"(x4)"`/`"(x2)"` (seed songs "Our God
+is an awesome God" and "Lion and the Lamb"). Left as-is rather than
+special-cased out — a repeat count is exactly the same kind of secondary,
+not-actually-a-chord-to-play annotation this was built to de-emphasize, so
+fading it slightly is consistent with the rule's own intent, not a
+mis-fire.
+
 ### Chords/Parts show-hide toggle: present in Chords view and Present, not Print
 
 Present has always had `Chords`/`Parts` toolbar buttons

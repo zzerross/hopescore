@@ -336,6 +336,13 @@
   .row-section{ color:var(--section); font-weight:700; margin-top:1.1em; }
   .row-section:first-child{ margin-top:0; }
   .row-chord{ color:var(--chord); font-weight:700; }
+  /* Melody/single-note (단음) or lone optional-chord rows -- a whole
+     chord-only line wrapped end to end in its own parens, e.g.
+     "( F# - G - A | F# )". One opacity rule covers light/dark/black-theme/
+     print at once, since it only fades whatever .row-chord's own color
+     already resolved to in each -- no need for a separate hardcoded color
+     per theme. */
+  .row-chord-melody{ opacity:.62; }
   .row-lyric{ color:var(--ink); font-weight:400; }
   .row-blank{ height:.85em; }
   .row-link{ white-space:normal; word-break:break-all; }
@@ -3097,7 +3104,17 @@ function computeSongRows(song, mode, targetVal, showNumbers){
       if (ytId) rows.push({cls:'row-lyric row-link', text:b.text.trim(), href:`https://www.youtube.com/watch?v=${ytId}`});
       else rows.push({cls:'row-lyric', text:b.text});
     }
-    else if (b.type==='chordOnly') rows.push({cls:'row-chord', text:b.chordLine});
+    else if (b.type==='chordOnly'){
+      // A chord-only row that's wrapped in its own outer parens end to end
+      // ("( F# - G - A | F# )", or a single "(Edim)" alone on its own
+      // line) reads as a softer/secondary line -- a melody/single-note
+      // (단음) cue, or an optional passing chord -- rather than the main
+      // chord progression. Rendered a shade paler so it doesn't compete
+      // visually with the chords that are actually meant to be played.
+      const trimmed = b.chordLine.trim();
+      const melody = trimmed.length > 1 && trimmed[0]==='(' && trimmed[trimmed.length-1]===')';
+      rows.push({cls:'row-chord', text:b.chordLine, melody});
+    }
     else if (b.type==='pair'){
       rows.push({cls:'row-chord', text:b.chordLine});
       rows.push({cls:'row-lyric', text:b.lyricLine});
@@ -3161,7 +3178,7 @@ function openKeyModeModal(prefs, onchange){
 }
 function rowToLineEl(r){
   const div = document.createElement('div');
-  div.className = 'line ' + r.cls;
+  div.className = 'line ' + r.cls + (r.melody ? ' row-chord-melody' : '');
   if (r.href){
     const a = document.createElement('a');
     a.href = r.href; a.target = '_blank'; a.rel = 'noopener noreferrer';
@@ -3296,7 +3313,7 @@ function wrapRows(rows, maxChars){
     // wraps instead via its own CSS (white-space: normal), so it never needs
     // to be split here to fit a column width.
     if (!r.href && r.cls !== 'row-blank' && (r.text||'').length > maxChars){
-      for (const [seg] of wrapAligned(r.text, '', maxChars)) out.push({cls:r.cls, text:seg});
+      for (const [seg] of wrapAligned(r.text, '', maxChars)) out.push({cls:r.cls, text:seg, melody:r.melody});
     } else {
       out.push(r);
     }
