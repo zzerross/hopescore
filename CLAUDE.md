@@ -774,6 +774,51 @@ now fixed, but worth understanding why):
   lands second simply wins for order, the same "last publish wins"
   tradeoff already accepted elsewhere in this project (a song's own
   fields don't merge either).
+
+  A second, more severe bug in the same function turned up later, also
+  real and shipped: **a date this editor's device had simply never
+  touched — no key at all in their local `STATE.setlists`, not even an
+  empty one — got wiped off the published setlists entirely.**
+  `const local = (STATE.setlists && STATE.setlists[date]) || []` treats
+  "no key for this date" exactly the same as "key present, empty array" —
+  but those mean two very different things: the second is a genuine
+  local deletion (every song on that date removed, correctly meant to
+  publish as gone), the first is "this editor has no opinion on this date
+  at all," because their device never opened or built it. With `local`
+  defaulted to `[]` either way, `removedSet` (every id in `base` not in
+  `local`) came out as *all of `base`* for an untouched date whose
+  baseline happened to be non-empty — read by the rest of the function as
+  "this editor deliberately removed every song here," which zeroed out
+  `result` and then dropped the date from `merged` entirely (the
+  `if (result.length) merged[date] = result` at the end of the loop never
+  fires for an empty result). Reported for real, and severe: one editor
+  publishing from two different devices/browsers, where one device had
+  never loaded several of the other device's more recently built dates,
+  wiped those dates off GitHub every time *that* device published —
+  eight setlist dates (2026-10-04 through 2026-11-15, including the
+  *current* week by the time it was caught) disappeared and reappeared
+  repeatedly across five real publishes as the two devices alternated,
+  along with two songs that existed only in one device's local copy.
+  Confirmed directly against the actual commit history (comparing each
+  publish's `SEED_SETLISTS`/`SEED_SONGS` blocks against the ones before
+  and after it) rather than guessed at, then recovered by hand: the
+  missing songs and every missing date's song list were restored from the
+  commit where they still existed. Fixed at the root by checking
+  `Object.prototype.hasOwnProperty.call(STATE.setlists, date)` before
+  computing `local` at all — a date with no key is now deferred to
+  `server` wholesale (the same "untouched, so don't touch it" treatment a
+  missing *top-level* field like `setlists` itself already gets in
+  `loadState()`, just applied one level deeper, per date, within a field
+  that already existed) and never enters the removal/reorder comparison;
+  only a date whose key the editor's local draft genuinely has (`[]`
+  included) still goes through that comparison exactly as before. If you
+  add a per-date or per-key field anywhere else that's merged by
+  comparing a local value against a baseline (the way `setlistKeyOverrides`
+  already does, correctly, since it's compared key-by-key rather than as
+  one array whose emptiness is ambiguous), make sure "key absent" and "key
+  present but empty" stay distinguishable the same way — collapsing them
+  with `|| []`/`|| {}` is exactly how both this bug and the earlier
+  `setlistKeyOverrides` rollout-trap bug happened.
 - **This is a single shared GitHub token model**, not per-user auth.
   Don't build anything that assumes a song or setlist's "owner" can be
   reliably identified beyond the free-text editor name stamped on the git

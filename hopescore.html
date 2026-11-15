@@ -2533,6 +2533,52 @@ function seedState(){
     "id": "mvgczyy28r0iwf",
     "createdAt": 1792481154986,
     "updatedAt": 1792841396411
+  },
+  {
+    "title": "God I look to You",
+    "keySemitone": 9,
+    "keyIsMinor": 0,
+    "keyPreferFlat": false,
+    "videos": [
+      {
+        "url": "https://youtu.be/5fTiQLzHZrk?si=l3hkskMEJah7wXkM",
+        "key": "11:0:0",
+        "label": "Bethel"
+      },
+      {
+        "url": "https://youtu.be/0cPMUqAaJ24?si=E_9QNsa_A6TwmaQQ",
+        "key": "11:0:0",
+        "label": "Brooke Ligertwood & Bethel"
+      },
+      {
+        "url": "https://youtu.be/dEubLmNPxwg?si=-a_ApDVq1Ga7eBlF",
+        "key": "9:0:0",
+        "label": "Jenn Johnson /Acoustic"
+      }
+    ],
+    "description": "",
+    "body": "Verse\n      A                            E \nGod I look to You, I won't be overwhelmed \n        D         F#m                 E  \nGive me vision to see things like You do \n      A                            E \nGod I look to You, You're where my help comes from \n         D          F#m               E  \nGive me wisdom; You know just what to do \n\nChorus\n       D        Bm       E \nI will love You Lord my strength  \n       D        Bm       E \nI will love You Lord my shield \n       D         Bm     E     A  \nI will love You Lord my rock forever  \n       D           E        A     \nAll my days I will love You God\n\nBridge\n     D     F#m      E\nHallelujah our God reigns \n     D     F#m      E\nHallelujah our God reigns \n     D     F#m      E        A\nHallelujah our God reigns forever  \n       D         E   A\nAll my days Hallelujah",
+    "id": "mwdn0txhuqrn5i",
+    "createdAt": 1794493375109,
+    "updatedAt": 1794548435257
+  },
+  {
+    "title": "I exalt Thee",
+    "keySemitone": 5,
+    "keyIsMinor": 0,
+    "keyPreferFlat": true,
+    "videos": [
+      {
+        "url": "https://youtu.be/BJphjE_1oJg?si=Uo_yYzqV_1gxqfFN",
+        "key": "5:0:1",
+        "label": "pastorloran"
+      }
+    ],
+    "description": "",
+    "body": "Intro\nF  C/E       \n\nVerse\n            Bb       Csus                F Dm\nFor Thou oh Lord art high above all the earth\n           Bb        Csus       F  \nThou art exalted far above all gods\n             Bb      Csus                F Dm\nFor Thou oh Lord art high above all the earth\n             Bb          Csus      F  \nThou  art  exalted  far above all gods\n\nChorus 1\n    F            C/E\nI exalt Thee; I exalt Thee\n    Bb      C     F  \nI exalt Thee oh  Lord\n    F            C/E          \nI exalt Thee; I exalt Thee\n    Bb      C    F  \nI exalt Thee oh Lord\n\nChorus 2\n     F            C/E\nWe exalt Thee; I exalt Thee\n     Bb      C     F  \nWe exalt Thee oh  Lord\n     F            C/E          \nWe exalt Thee; I exalt Thee\n     Bb      C    F  \nWe exalt Thee oh Lord",
+    "id": "mwg8hbcxwihm7p",
+    "createdAt": 1794650348481,
+    "updatedAt": 1794650348481
   }
 ];
   /* SEED_SONGS_END */
@@ -2550,6 +2596,49 @@ function seedState(){
   ],
   "2026-09-27": [
     "mu6u3mxjf53qgo",
+    "mueso9a77f0s9j",
+    "seed11"
+  ],
+  "2026-10-04": [
+    "seed20",
+    "seed1",
+    "mtwgcruvddvscl"
+  ],
+  "2026-10-11": [
+    "mueso9a77f0s9j",
+    "muupljvvmsz4cp",
+    "seed5"
+  ],
+  "2026-10-18": [
+    "seed13",
+    "mu6u7r2lyvx6ab",
+    "muupljvvmsz4cp"
+  ],
+  "2026-10-24": [
+    "seed4",
+    "mueso9a77f0s9j",
+    "mvgczyy28r0iwf",
+    "seed12",
+    "mtwgcruvddvscl"
+  ],
+  "2026-10-25": [
+    "mtwgcruvddvscl",
+    "mu6u7r2lyvx6ab",
+    "mvgczyy28r0iwf"
+  ],
+  "2026-11-01": [
+    "mtwhtm4ra3463s",
+    "mvgczyy28r0iwf",
+    "seed9"
+  ],
+  "2026-11-08": [
+    "seed16",
+    "seed21",
+    "seed15"
+  ],
+  "2026-11-15": [
+    "mwdn0txhuqrn5i",
+    "mwg8hbcxwihm7p",
     "mueso9a77f0s9j"
   ]
 };
@@ -5462,7 +5551,30 @@ function mergeSetlistsForPublish(serverSetlists){
   const merged = {};
   for (const date of dates){
     const server = (serverSetlists && serverSetlists[date]) || [];
-    const local = (STATE.setlists && STATE.setlists[date]) || [];
+    // A date this editor's local STATE.setlists has literally no key for
+    // -- never opened, never built, never even visited -- means "no
+    // opinion," not "I emptied it." Without this check, `local` below
+    // would default to the same `[]` an editor gets by genuinely adding
+    // then removing every song from a date they DID touch, and the
+    // removedSet logic a few lines down would read that as "every song on
+    // this date was deliberately removed," wiping the date off the
+    // published result (the `if (result.length) merged[date] = result`
+    // at the end of this loop drops a date entirely once its result list
+    // is empty). Shipped for real: a second device/browser for the same
+    // editor that had simply never loaded a date someone else built (10/04
+    // through 11/15, eight dates across several real publishes) kept
+    // wiping it off GitHub every time THAT device published, because its
+    // own `STATE.setlists` had no key for those dates at all, not even an
+    // empty one. Deferring entirely to `server` here -- the same
+    // "untouched, so don't touch it" treatment a missing top-level field
+    // already gets elsewhere in this file -- fixes it; only a date this
+    // editor's local draft actually has a key for (even `[]`) goes through
+    // the real removal/reorder detection below.
+    if (!(STATE.setlists && Object.prototype.hasOwnProperty.call(STATE.setlists, date))){
+      if (server.length) merged[date] = server;
+      continue;
+    }
+    const local = STATE.setlists[date] || [];
     const base = (baseline && baseline[date]) || [];
     const baseSet = new Set(base);
     const localSet = new Set(local);
