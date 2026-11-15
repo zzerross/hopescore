@@ -467,7 +467,10 @@
      off the edge of the screen with nothing to scroll them back into view
      (overflow-x:auto here is the belt-and-suspenders fallback for that,
      matching .topbar-scroll's own pattern; the title fix is what stops it
-     from happening in the first place). */
+     from happening in the first place). Close itself used to sit at the
+     end of this bar, right where that kind of overflow bites hardest --
+     moved to the front instead (see #presentClose below) so it's always
+     the first thing in view, never the thing scrolled/pushed out. */
   .present-top{
     display:flex; align-items:center; gap:12px; padding:14px 18px;
     margin-left:76px; /* permanent gutter for .present-toolbar-toggle -- see its comment */
@@ -703,6 +706,7 @@
 <div id="present">
   <button id="presentToolbarToggle" class="present-toolbar-toggle" title="Hide toolbar"></button>
   <div class="present-top">
+    <button class="iconbtn" id="presentClose">Close ✕</button>
     <div class="present-counter" id="presentCounter"></div>
     <div class="present-title" id="presentTitle"></div>
     <button class="topbar-key-badge" id="presentKeyBadgeBtn" title="Change key / view mode"></button>
@@ -724,7 +728,6 @@
       <span class="font-size-label" id="presentSpacingLabel"></span>
       <button id="presentSpacingInc" title="Looser">Line +</button>
     </div>
-    <button class="iconbtn" id="presentClose">Close ✕</button>
   </div>
   <div class="present-body">
     <div class="present-chart-wrap"><div class="present-chart mono" id="presentChart"></div></div>

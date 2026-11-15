@@ -334,6 +334,23 @@ vice versa — a feature, not a bug: it's one shared "how is this song
 currently being read" preference, not two independent ones that happen
 to look the same.
 
+### Present's Close button sits first in the toolbar, not last
+
+`.present-top` is a horizontally-scrolling flex row (`overflow-x:auto`,
+every button `flex-shrink:0`) specifically because it has to fit on a
+narrow phone screen without any one control getting silently clipped —
+see the `.present-title` comment just above `.present-top` in the CSS for
+the real bug that shape was built to avoid (a long title that wrapped
+instead of shrinking used to push the Prompter toggle, font +/-, and part
+of Close off the edge with nothing to scroll them back into view). Close
+used to be the *last* child in that row, which put the one button every
+other control's overflow risk lands on exactly where that risk is
+highest. Moved to be the *first* child instead (`#present .present-top`'s
+markup, right after the opening tag) — now it's always the first thing in
+view regardless of how much the rest of the toolbar scrolls, never the
+thing that needs scrolling to reach. Purely a DOM-order change; nothing
+about `closePresent()` or the button's own styling needed touching.
+
 A song's `body` is free-form chord/lyric chart text — see `parseBody()`
 (section 2) for the actual line-by-line parsing rules (chord-line
 detection, section-header detection, the `##` custom-section-name escape
