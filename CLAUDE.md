@@ -410,16 +410,35 @@ line with F landing where "member" starts and C/F where "vided" does.
 it into this app's normal two-line chord-over-lyric pair — the fragments
 concatenated back into one lyric line, each chord placed at the text
 column it actually falls at (the combined length of every fragment
-before it). Wired into the song editor's `#bodyInput` textarea via a
-`paste` event listener: the clipboard text is run through the fixer
-before it ever lands in the field; if nothing changed (an already-normal
-paste), the native paste proceeds completely untouched; if something was
-fixed, the native paste is prevented and the *fixed* text is inserted
-instead via `document.execCommand('insertText', ...)` (not a direct
-`bodyInput.value` assignment — that wouldn't register as a native undo
-step, so a wrong guess couldn't be removed with a plain Ctrl+Z the way
-every other keystroke/paste can be), with a toast naming what happened
-so it's never a silent surprise.
+before it).
+
+**How this is wired to `#bodyInput` is more specific than it looks, and
+got this wrong once already.** The first cut read the pasted text straight
+off the `paste` event itself (`e.clipboardData.getData('text/plain')`)
+and, if the fixer changed anything, called `e.preventDefault()` and
+inserted the fixed text in its place. That shipped, then was reported not
+doing anything at all on a real phone — the raw, unfixed paste went
+through completely untouched, as if the listener had never fired. The
+likely cause: that mobile browser doesn't reliably populate
+`clipboardData` for every paste action (a long-press "Paste" from the
+on-screen keyboard isn't the same code path as a physical Ctrl+V), so
+`pasted` came back empty and the handler's own `if (!pasted) return`
+silently bailed every time.
+
+Fixed by not reading the clipboard at all. `paste` now only sets a
+`pasteJustHappened` flag; the real check runs on the `input` event that
+follows, reading `bodyInput.value` directly — i.e. inspecting what the
+browser itself already put there, however it got the text in. This works
+identically regardless of whether `clipboardData` is populated, which
+paste mechanism was used, or even whether the insertion came from a paste
+at all (drag-and-drop text, voice dictation, a browser extension) as long
+as an `input` event follows it. When a fix is found, the whole field is
+replaced in one go — focus, select-all, then
+`document.execCommand('insertText', ...)` where that's supported (so it
+stays a single native undo step), falling back to a direct `.value`
+assignment plus a dispatched `input` event only where `execCommand` isn't
+available either — with a toast naming what happened so it's never a
+silent surprise.
 
 **Why detecting this turned out to need three separate safety gates, not
 just "fragment, lone chord, fragment":** that raw shape alone is
@@ -481,15 +500,22 @@ as a standalone chord line above its lyric rather than merged inline.
 Harmless cosmetically, and a deliberate trade against the much larger
 risk of corrupting real content.
 
-Verified three ways, not just the one reported paste: (1) the exact
-reported text reconstructs into grammatically correct lines matching the
-real song, confirmed end to end through a real `paste` event on
-`#bodyInput` with the live preview updating correctly; (2)
-`fixPastedChordArtifact()` run against every real seed song's body
-returns each one byte-for-byte unchanged; (3) a real `Ctrl+Z` after a
-fix-triggering paste removes the inserted text cleanly (same as undoing
-any other paste), confirmed via `execCommand`'s own native undo
-integration rather than assumed from the code alone.
+Verified against a real native paste, not a synthetic one — a dispatched
+`paste`/`input` event doesn't exercise the same code path a genuine OS
+clipboard paste does (a synthetic event never actually inserts text, so
+an early version of this test looked broken for a reason that had
+nothing to do with the feature itself). The real check: seed the OS
+clipboard (`navigator.clipboard.writeText`) and drive an actual
+`Ctrl+A`/`Ctrl+V` through Playwright's keyboard API. That confirmed: (1)
+the exact reported text reconstructs into grammatically correct lines
+matching the real song, with the live preview updating correctly; (2)
+`fixPastedChordArtifact()` run against every real seed song's body still
+returns each one byte-for-byte unchanged; (3) a real `Ctrl+Z` afterward
+restores the *raw, unfixed* paste exactly (not just back to an empty
+field) — the native paste and this function's own select-all-and-replace
+land as two separate undo steps, so undoing once reveals the original
+clipboard text to inspect or fix by hand if the heuristic ever guesses
+wrong, and a second `Ctrl+Z` goes back to before the paste entirely.
 
 ### Publish flow
 

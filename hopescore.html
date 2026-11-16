@@ -4375,29 +4375,43 @@ function renderEditView(songId){
 
   // A chart pasted in from a chord-chart website commonly has its chords
   // come apart into their own lines on copy (see fixPastedChordArtifact()'s
-  // own comment) -- silently correcting that only when this exact shape is
-  // actually detected (a normal paste comes back byte-for-byte identical
-  // and is never intercepted) and routing the fix through
-  // document.execCommand('insertText', ...) rather than setting
-  // bodyInput.value directly keeps it a single native undo step, so one
-  // Ctrl+Z removes the inserted fix cleanly if this heuristic ever guesses
-  // wrong -- back to whatever was there before the paste, same as undoing
-  // any other single typed/pasted insertion, not a second "restore the
-  // raw unfixed text" step (the raw clipboard text was never inserted at
-  // all, since the paste itself was prevented and replaced by this one
-  // insertText call).
-  bodyInput.addEventListener('paste', (e)=>{
-    const clip = e.clipboardData || window.clipboardData;
-    const pasted = clip && clip.getData('text/plain');
-    if (!pasted) return;
-    const fixed = fixPastedChordArtifact(pasted);
-    if (fixed === pasted) return;
-    e.preventDefault();
+  // own comment). Checked on the 'input' event that follows a paste, by
+  // reading bodyInput.value directly, rather than reading the clipboard
+  // off the paste event itself (an earlier version did exactly that, via
+  // e.clipboardData.getData('text/plain')) -- confirmed for real that this
+  // never engages on at least one real mobile browser: the raw, unfixed
+  // paste went through completely untouched, as if the listener had never
+  // fired at all, most likely because that browser doesn't reliably
+  // populate clipboardData for every paste action (e.g. a long-press
+  // "Paste" from the on-screen keyboard, as opposed to a physical Ctrl+V).
+  // Reading the field's own value after the browser has already inserted
+  // the pasted text sidesteps that difference entirely -- it works the
+  // same regardless of how the browser itself got the text in, or whether
+  // it exposes clipboardData at all.
+  let pasteJustHappened = false;
+  bodyInput.addEventListener('paste', ()=>{ pasteJustHappened = true; });
+  bodyInput.addEventListener('input', ()=>{
+    if (!pasteJustHappened) return;
+    pasteJustHappened = false;
+    const current = bodyInput.value;
+    const fixed = fixPastedChordArtifact(current);
+    if (fixed === current) return;
+    // Replace the whole field in one go (select-all, then insertText)
+    // rather than trying to patch in just the pasted region -- simpler,
+    // and correct either way since fixPastedChordArtifact() already
+    // leaves everything outside the broken shape untouched. Routed
+    // through document.execCommand('insertText', ...) where it's
+    // supported so this stays a single native undo step (one Ctrl+Z
+    // cleanly removes it, same as undoing any other paste); falls back to
+    // a direct .value assignment -- not undo-tracked, but always works --
+    // only where execCommand itself isn't available either.
+    const selStart = bodyInput.selectionStart;
+    bodyInput.focus();
+    bodyInput.select();
     const inserted = document.execCommand && document.execCommand('insertText', false, fixed);
     if (!inserted){
-      const start = bodyInput.selectionStart, end = bodyInput.selectionEnd;
-      bodyInput.value = bodyInput.value.slice(0, start) + fixed + bodyInput.value.slice(end);
-      bodyInput.selectionStart = bodyInput.selectionEnd = start + fixed.length;
+      bodyInput.value = fixed;
+      bodyInput.selectionStart = bodyInput.selectionEnd = Math.min(selStart, fixed.length);
       bodyInput.dispatchEvent(new Event('input', {bubbles:true}));
     }
     toast('Fixed pasted chord line breaks (Ctrl+Z to undo)');
