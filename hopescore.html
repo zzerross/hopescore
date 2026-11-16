@@ -1295,7 +1295,15 @@ function lineIsChordLine(line){
 // "VERSE.1" -- some chord-chart sources use "." as a space filler (see
 // despaceFillerDots) even on a section label by itself, which has only one
 // such dot and so doesn't clear that heuristic's own 2+ threshold.
-const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\s*:?\s*\]?$/i;
+// The optional \(?...\)? around the count/x suffix tolerates a
+// parenthesized repeat count too -- "BRIDGE (4X)" -- not just the
+// bracketed-whole-label or bare-suffix shapes already handled. Added
+// after "BRIDGE (4X)" (digits-then-x, unlike the already-working
+// "INTRO (x4)" x-then-digits shape) turned up a real song with its
+// chord-only line silently paired with that text as if it were a lyric
+// (same trap as the "BRIDGE (x2)" one documented below, just a
+// differently-shaped suffix this regex's suffix group didn't cover yet).
+const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*\(?(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\)?\s*:?\s*\]?$/i;
 function sectionLabelFromMatch(m){
   const word = /pre-?chorus/i.test(m[1]) ? 'Pre-Chorus' : m[1][0].toUpperCase()+m[1].slice(1).toLowerCase();
   // repeat count can be written as "2x" (number first) or "x2" (x first, e.g. "Bridge x2")
@@ -1322,7 +1330,7 @@ function detectSectionLabel(trimmed){
 // of these words ("Repeat after me...", "Ending up right here...") --
 // *only* matches when what's left after the header genuinely still looks
 // like a chord line on its own.
-const SECTION_WORD_PREFIX_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\s*:?\s*\]?/i;
+const SECTION_WORD_PREFIX_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*\(?(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\)?\s*:?\s*\]?/i;
 // Returns {name, rest} if `trimmed` is a section name followed by more
 // content that's itself a valid chord line (the glued-count or glued-
 // progression cases above); null otherwise, including when the ENTIRE line
@@ -1665,7 +1673,14 @@ function simplifyBarNotationTokens(tokens){
     const chords = bar.filter(t => !MULTI_SLASH_RE.test(t.text));
     const hasHold = bar.some(t => MULTI_SLASH_RE.test(t.text));
     const distinct = new Set(chords.map(t => t.text));
-    if (hasHold && distinct.size === 1){ out.push(chords[0]); anySimplified = true; }
+    // A bar that starts on a hold -- "| / / / A |", the chord arriving on
+    // a later beat instead of the downbeat -- carries real timing
+    // information in exactly the same way a mid-bar chord change does, so
+    // it's excluded here the same way multi-chord bars already are: only
+    // ever collapse a bar whose one chord is already its very first
+    // token, i.e. "chord, then holds," never "holds, then chord."
+    const startsOnChord = bar.length > 0 && !MULTI_SLASH_RE.test(bar[0].text);
+    if (hasHold && distinct.size === 1 && startsOnChord){ out.push(chords[0]); anySimplified = true; }
     else out.push(...bar);
     bar = [];
   }

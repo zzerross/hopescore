@@ -272,20 +272,28 @@ from. `"| Bb / / F/A |"` is different: a real chord change partway
 through the bar, where the slashes are doing real work marking *where*
 in the bar it happens, so those stay exactly as typed. Requested
 directly as a two-part rule: collapse the holds when a bar has exactly
-one distinct chord in it, keep them when a bar has more than one.
+one distinct chord in it, keep them when a bar has more than one. A
+third case was added right after, from the same conversation: `"| / / /
+A |"` — the chord landing on the *last* beat instead of the downbeat —
+also carries real timing information (a pickup/anticipation into the
+next bar) and must stay exactly as typed too, even though it's still
+only one distinct chord; only a bar that *starts* on its one chord
+(`"chord, then holds"`, never `"holds, then chord"`) collapses.
 
 `simplifyBarNotationTokens(tokens)` (section 3, right before
 `renderBlocks()`) implements this, called from `renderBlocks()`'s
 `chordOnly` branch only (bar notation never appears in a chord+lyric
 `pair` — lyrics don't pair with bar lines). It groups a chordOnly row's
 tokens into bars by `BAR_LINE_TOKENS` (`|`, `||`, `|:`, `:|`, `||:`,
-`:||`), and for each bar: if it contains at least one hold token
-(`MULTI_SLASH_RE`, the same "any run of `/`" check `isChordToken()`
-already uses) *and* exactly one distinct non-hold chord, that bar is
-replaced with just the one chord; a bar with two or more distinct chords,
-zero chords (a pure hold-over bar like `"| / / / / |"`, continuing
-whatever the previous bar was — nothing to collapse *to*), or already
-just a bare chord with no hold tokens at all, passes through completely
+`:||`), and for each bar collapses it to just its one chord only when
+*all three* hold: it contains at least one hold token (`MULTI_SLASH_RE`,
+the same "any run of `/`" check `isChordToken()` already uses), exactly
+one distinct non-hold chord, and that chord is the bar's own *first*
+token (`startsOnChord`) — not preceded by a hold. A bar with two or more
+distinct chords, zero chords (a pure hold-over bar like `"| / / / / |"`,
+continuing whatever the previous bar was — nothing to collapse *to*), a
+chord arriving after a hold instead of before one, or already just a
+bare chord with no hold tokens at all, passes through completely
 unchanged.
 
 **Purely cosmetic and always-on, never touching the stored chart text**
@@ -311,6 +319,19 @@ library: `"I Speak Jesus"`'s own `"| D/F#        | x2 | G2         | D  |"`
 rewritten for no reason before an `anySimplified` flag was added to make
 the whole function a hard no-op (returns the original `tokens` unchanged)
 whenever nothing actually qualified.
+
+**This never even runs on a row that parseBody() misclassifies as
+something other than `chordOnly`** — confirmed for real on "Always On
+Time"'s own `"Instrumental 1"` bar line, which looked like this feature
+simply wasn't working for it, when the actual cause was upstream: the
+line right after it, `"BRIDGE (4X)"`, wasn't recognized as a section
+header at all (see the `SECTION_WORD_RE` parenthesized-suffix gap in
+"Known traps" below), so `parseBody()` paired the chord line with it as
+a fake "lyric" instead of leaving it as its own `chordOnly` block — and
+`simplifyBarNotationTokens()` is only ever called from the `chordOnly`
+branch. If this feature ever looks like it's "not working" for a
+specific line again, check what *type* of block `parseBody()` actually
+produced for it before assuming the bug is in this function.
 
 ### Chords/Parts show-hide toggle: present in Chords view and Present, not Print
 
@@ -787,6 +808,33 @@ now fixed, but worth understanding why):
   "actually be a section, just not in a form that matches on the whole
   line," make sure *this* lookahead knows about it as well — it's a second,
   easy-to-forget place that has to independently agree.
+
+  A sibling gap in the same two regexes turned up later, in a real song
+  ("Always On Time"): `"BRIDGE (4X)"` — digits *before* the `x`, the
+  opposite order from the already-working `"BRIDGE (x2)"`/`"INTRO (x4)"`
+  shapes above. `SECTION_WORD_RE`'s suffix group already accepted a
+  digits-then-`x` suffix bare (`"Bridge 4x"`), just never with a
+  parenthesized form of it — and unlike `"INTRO (x4)"` (`x` then digits,
+  which `splitLeadingSectionLabel()`'s `lineIsChordLine()` gate happens to
+  accept, since `"x4"` alone matches `REPEAT_COUNT_RE`), `"4X"` alone
+  doesn't match that same regex (anchored to start with `x`, not end with
+  it), so the `splitLeadingSectionLabel()` fallback didn't catch this
+  shape *either* — both `detectSectionLabel()` and
+  `splitLeadingSectionLabel()` returned null for it, not just one. The
+  chord-only line directly above it (`"Instrumental 1"`'s own bar
+  progression) ended up paired with `"BRIDGE (4X)"` as its "lyric" the
+  same way the `(x2)` case above used to, this time with no fallback path
+  catching it at all. Fixed by teaching `SECTION_WORD_RE`'s own suffix
+  group to tolerate an optional `\(...\)` wrapped around the whole
+  count/`x` alternation (`\(?(?:...)?\)?`, mirrored into
+  `SECTION_WORD_PREFIX_RE` too) rather than only around the entire label
+  the way the leading `\[?`/trailing `\]?` already did — so `"BRIDGE
+  (4X)"` is now a direct, whole-line `detectSectionLabel()` match
+  (`"Bridge 4x"`) with no need for the prefix-split fallback at all. If a
+  sixth shape turns up (e.g. parens around a suffix that *also* has
+  trailing content after the closing paren), check both regexes again,
+  not just one — this bug class has now hit both of them independently
+  twice each.
 
   Three more unrelated chart-notation gaps turned up in the same audit, in
   one song (`MAGNIFICENT`): an en dash (`"–"`) used as a chord separator in
