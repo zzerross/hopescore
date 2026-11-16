@@ -1441,6 +1441,152 @@ function normalizeBodyBlankLines(bodyText){
   return parts.map(p => p.join('\n')).join('\n\n');
 }
 
+// Many chord-chart websites render each chord as its own inline element
+// positioned above the lyric text, rather than as plain monospace text
+// with the chord typed inline. Copying that as plain text commonly comes
+// apart: each chord lands on its own line, splitting what was really one
+// lyric line into several short fragments with a lone chord token wedged
+// between each pair -- "I re" / "F" / "member how You pro" / "C/F" /
+// "vided" for what should read as one "I remember how You provided" line
+// with F landing where "member" starts and C/F where "vided" does.
+// Detects exactly that shape -- a plain lyric fragment, then a line that's
+// nothing but a single real chord, repeating, with nothing else breaking
+// the run -- and reconstructs it into this app's normal two-line
+// chord-over-lyric pair: the fragments concatenated back into one lyric
+// line, each chord placed at the text column it actually falls at (the
+// combined length of every fragment before it). A line this app would
+// already treat as a real line on its own -- blank, a section header
+// (recognized or not: see looksLikeUppercaseLabel() below), a bar-notation
+// chord line, or a lone chord line without a following fragment to pair
+// with -- never starts or extends a group, so already-correct content
+// (including this app's own normal "one chord line directly above one
+// full lyric line" pairs, which never have a fragment as the FIRST line of
+// a pair) passes through completely untouched.
+function looksLikeUppercaseLabel(line){
+  const t = line.trim();
+  return t !== '' && !/[a-z]/.test(t) && /[A-Z]/.test(t);
+}
+function fixPastedChordArtifact(text){
+  const rawLines = (text||'').replace(/\r\n/g,'\n').split('\n');
+  function isLoneChordLine(line){
+    const toks = tokenizeLine(line);
+    return toks.length===1 && baseChordToken(normalizeChordToken(toks[0].text));
+  }
+  // A lone chord that starts a brand-new row rather than continuing the
+  // one being reconstructed gets a leading space in front of it that a
+  // same-row continuation chord never has -- consistently true of every
+  // row boundary in real pasted examples that isn't ALSO marked by a
+  // blank line (most are, via the blank-marker lines themselves splitting
+  // the run -- but a source occasionally renders two originally-separate
+  // rows back to back with nothing between them, e.g. a chorus's last
+  // line flowing straight into the next chorus repeat's first line with
+  // no blank div between). Without this check, nothing would stop the
+  // fragment/chord run from bridging straight across that boundary and
+  // silently gluing two unrelated lines into one -- "You were always on
+  // time" + "Jesus, when I went through the fire" became one garbled
+  // "You were always on timeJesus, when I went through the fire" line
+  // before this check existed, confirmed directly against the real
+  // reported paste. tokenizeLine()'s own col (start index of the match)
+  // is 0 for every genuine continuation chord and >0 for every one of
+  // these row-starting ones in that same real paste, so it's used as the
+  // signal rather than guessing from content.
+  function chordStartsNewRow(line){
+    const toks = tokenizeLine(line);
+    return toks.length===1 && toks[0].col > 0;
+  }
+  function isFragmentLine(line){
+    const trimmed = line.trim();
+    if (trimmed === '') return false;
+    if (trimmed.startsWith('##') || !!detectSectionLabel(trimmed) || !!splitLeadingSectionLabel(trimmed)) return false;
+    // A section word this app doesn't recognize, or any other short
+    // all-caps label a real source commonly writes part names in --
+    // "BRIDGE (4X)", "REPEAT CHORUS" -- would otherwise look exactly like
+    // a valid fragment0 sitting right before this song's very first real
+    // chord+lyric pair, which is an entirely normal, already-correct
+    // shape this function must never touch.
+    if (looksLikeUppercaseLabel(line)) return false;
+    if (isLoneChordLine(line)) return false;
+    if (lineIsChordLine(line)) return false;
+    return true;
+  }
+  // A plain lyric fragment followed by a lone chord followed by another
+  // fragment is, on its own, structurally IDENTICAL to this app's own
+  // completely normal convention of one full lyric line, then the next
+  // full lyric line's own chord, then that next full lyric line -- two
+  // independent, already-correct pairs with no blank line required
+  // between consecutive lines in the same part. Nothing about the raw
+  // line shapes tells these two cases apart; only where the run starts
+  // does. Confirmed for real against this app's own seed songs, not a
+  // hypothetical: naive fragment/chord/fragment detection (even after
+  // excluding a fragment that's itself already paired with the chord
+  // right above it) still glued two independent, already-correct lines
+  // together in 8 real songs ("Way Maker", "Praise", "Better is One Day"
+  // among them) wherever a later line simply had no chord shown of its
+  // own (a familiar repeated hook line, commonly left bare) immediately
+  // before the next line's real chord+lyric pair. A reconstruction group
+  // is only ever safe to start where the source text itself already marks
+  // the start of a fresh row -- a blank line, a section header, or the
+  // very start of the pasted text -- which is also an exact description
+  // of where every genuine artifact row actually starts (the webpage this
+  // shape comes from renders each original line as its own block,
+  // producing that same blank-line marker before every single one once
+  // copied as plain text). Gating on it this way costs very little real
+  // coverage -- in the reported paste, only the rare case of a chord that
+  // starts a row with literally nothing (not even a blank line) before it
+  // goes unfixed, left as a standalone chord line instead of merged
+  // inline, which is a harmless cosmetic shortfall next to the risk of
+  // corrupting real content.
+  function isRowBoundaryLine(line){
+    const trimmed = line.trim();
+    if (trimmed === '') return true;
+    if (trimmed.startsWith('##') || !!detectSectionLabel(trimmed) || !!splitLeadingSectionLabel(trimmed)) return true;
+    // A bare major chord ("D", "A", "E"...) is already all-uppercase with
+    // no lowercase quality letter, so looksLikeUppercaseLabel() alone
+    // would mistake a perfectly real chord line for a section-style
+    // label and -- wrongly -- call it a safe row boundary, undoing the
+    // very check this function exists for. A real chord line (lone or
+    // multi-token) is never itself a "label," so it's ruled out first.
+    if (isLoneChordLine(line) || lineIsChordLine(line)) return false;
+    return looksLikeUppercaseLabel(line);
+  }
+  function canStartGroup(i){
+    return isFragmentLine(rawLines[i]) && (i===0 || isRowBoundaryLine(rawLines[i-1]));
+  }
+  const out = [];
+  let i = 0;
+  while (i < rawLines.length){
+    if (canStartGroup(i)){
+      const fragments = [rawLines[i]];
+      const chords = [];
+      let j = i + 1;
+      while (j+1 < rawLines.length && isLoneChordLine(rawLines[j]) && !chordStartsNewRow(rawLines[j]) && isFragmentLine(rawLines[j+1])){
+        chords.push(normalizeChordToken(tokenizeLine(rawLines[j])[0].text));
+        fragments.push(rawLines[j+1]);
+        j += 2;
+      }
+      if (chords.length){
+        let lyricLine = '';
+        const placed = [];
+        for (let k=0; k<fragments.length; k++){
+          if (k>0) placed.push({col: lyricLine.length, text: chords[k-1]});
+          lyricLine += fragments[k];
+        }
+        let chordLine = '';
+        for (const p of placed){
+          while (chordLine.length < p.col) chordLine += ' ';
+          chordLine += p.text;
+        }
+        out.push(chordLine, lyricLine);
+        i = j;
+        continue;
+      }
+    }
+    out.push(rawLines[i]);
+    i++;
+  }
+  return out.join('\n');
+}
+
 /* =========================================================================
    3. Column realignment (keeps chord columns lined up over lyrics)
    ========================================================================= */
@@ -4226,6 +4372,36 @@ function renderEditView(songId){
   bodyInput.addEventListener('input', refreshWhitespaceBackdrop);
   bodyInput.addEventListener('scroll', ()=>{ bodyBackdrop.scrollTop = bodyInput.scrollTop; bodyBackdrop.scrollLeft = bodyInput.scrollLeft; });
   new ResizeObserver(syncBackdropHeight).observe(bodyInput);
+
+  // A chart pasted in from a chord-chart website commonly has its chords
+  // come apart into their own lines on copy (see fixPastedChordArtifact()'s
+  // own comment) -- silently correcting that only when this exact shape is
+  // actually detected (a normal paste comes back byte-for-byte identical
+  // and is never intercepted) and routing the fix through
+  // document.execCommand('insertText', ...) rather than setting
+  // bodyInput.value directly keeps it a single native undo step, so one
+  // Ctrl+Z removes the inserted fix cleanly if this heuristic ever guesses
+  // wrong -- back to whatever was there before the paste, same as undoing
+  // any other single typed/pasted insertion, not a second "restore the
+  // raw unfixed text" step (the raw clipboard text was never inserted at
+  // all, since the paste itself was prevented and replaced by this one
+  // insertText call).
+  bodyInput.addEventListener('paste', (e)=>{
+    const clip = e.clipboardData || window.clipboardData;
+    const pasted = clip && clip.getData('text/plain');
+    if (!pasted) return;
+    const fixed = fixPastedChordArtifact(pasted);
+    if (fixed === pasted) return;
+    e.preventDefault();
+    const inserted = document.execCommand && document.execCommand('insertText', false, fixed);
+    if (!inserted){
+      const start = bodyInput.selectionStart, end = bodyInput.selectionEnd;
+      bodyInput.value = bodyInput.value.slice(0, start) + fixed + bodyInput.value.slice(end);
+      bodyInput.selectionStart = bodyInput.selectionEnd = start + fixed.length;
+      bodyInput.dispatchEvent(new Event('input', {bubbles:true}));
+    }
+    toast('Fixed pasted chord line breaks (Ctrl+Z to undo)');
+  });
 
   // Starts from whatever this song already resolves to (its own explicit
   // list, or -- for a song saved before this list existed -- links detected

@@ -394,6 +394,103 @@ If you're importing a chart from elsewhere, paste it as-is and let the
 editor's Save button normalize it rather than hand-cleaning the blank
 lines first.
 
+### Pasting from a chord-chart website: fixPastedChordArtifact()
+
+Many chord-chart websites render each chord as its own inline element
+positioned above the lyric, rather than as plain monospace text with the
+chord typed inline. Copying that as plain text commonly comes apart: each
+chord lands on its own line, splitting what was really one lyric line
+into several short fragments with a lone chord wedged between each pair
+— reported for real: `"I re" / "F" / "member how You pro" / "C/F" /
+"vided"` for what should read as one `"I remember how You provided"`
+line with F landing where "member" starts and C/F where "vided" does.
+
+`fixPastedChordArtifact(text)` (section 2, right after
+`normalizeBodyBlankLines()`) detects exactly that shape and reconstructs
+it into this app's normal two-line chord-over-lyric pair — the fragments
+concatenated back into one lyric line, each chord placed at the text
+column it actually falls at (the combined length of every fragment
+before it). Wired into the song editor's `#bodyInput` textarea via a
+`paste` event listener: the clipboard text is run through the fixer
+before it ever lands in the field; if nothing changed (an already-normal
+paste), the native paste proceeds completely untouched; if something was
+fixed, the native paste is prevented and the *fixed* text is inserted
+instead via `document.execCommand('insertText', ...)` (not a direct
+`bodyInput.value` assignment — that wouldn't register as a native undo
+step, so a wrong guess couldn't be removed with a plain Ctrl+Z the way
+every other keystroke/paste can be), with a toast naming what happened
+so it's never a silent surprise.
+
+**Why detecting this turned out to need three separate safety gates, not
+just "fragment, lone chord, fragment":** that raw shape alone is
+*structurally identical* to this app's own completely normal "one full
+chord line directly above one full lyric line" pairs, repeated
+consecutively with no blank line required between lines in the same
+part — which is how most of this app's own real song library is already
+written. A naive version of this function, tested directly against every
+real seed song (not just the one reported paste), silently corrupted 14
+of them before the gates below existed — confirmed for real, not
+hypothetical, including "Way Maker"'s chorus
+(`"(You are) Way Maker, Miracle Worker"` + its own next line's chord +
+`"Promise Keeper"` glued into one garbled line) and "Praise" (an
+unmarked repeated hook line immediately followed by an unrelated real
+chord+lyric pair, with nothing between them to signal they're
+unrelated). The three gates, in the order they matter:
+
+1. `looksLikeUppercaseLabel()` — a line with at least one uppercase
+   letter and zero lowercase ones never counts as a fragment. Catches
+   part-name-ish labels this app's own section detection doesn't
+   recognize by shape (`"BRIDGE (4X)"`, `"REPEAT CHORUS"`) that would
+   otherwise look exactly like a valid lyric fragment sitting right
+   before a song's very first real chord+lyric pair.
+2. A fragment can never be absorbed as a *continuation* if its own chord
+   line starts with leading whitespace (`chordStartsNewRow()`, checked
+   via `tokenizeLine()`'s own column, not a guess from content) — a
+   chord that starts a brand-new row gets a leading space in real pasted
+   examples that a same-row continuation chord never has, which is what
+   stops two originally-separate rows that happen to sit back to back
+   with nothing between them (no blank div in the source) from bridging
+   into one line.
+3. **The one that actually closed the 14-song gap**: a reconstruction
+   group is only ever allowed to *start* where the source text itself
+   already marks a fresh row — right after a blank line, a section
+   header, or the very start of the pasted text (`canStartGroup()` /
+   `isRowBoundaryLine()`). Nothing about the raw fragment/chord/fragment
+   shape alone can tell apart "one lyric line broken into two fragments
+   by a chord" from "two already-correct, independent chord+lyric pairs
+   in a row" — only where the run *starts* does, since every genuine
+   artifact row in a real pasted example starts right after that same
+   blank-line marker (the source site renders each original line as its
+   own block, which is exactly what produces that blank line on copy in
+   the first place), while none of the 14 false-positive cases do.
+   `isRowBoundaryLine()` has its own trap worth knowing about if you
+   touch this again: a bare major chord like `"D"` or `"A"` is *already*
+   all-uppercase with no lowercase letter, so checking
+   `looksLikeUppercaseLabel()` here without first ruling out a real
+   chord line reintroduced the exact bug this gate exists to prevent
+   (every verse that opens with a bare chord like `D`/`A`/`E`/`G`/`C`
+   got mis-read as sitting right after a "label," re-opening the door to
+   gluing that verse's first two lines together) — caught by re-running
+   the full-library check immediately after, not assumed safe.
+
+Gate 3 does cost a small amount of real coverage: in the reported paste,
+the one case of a chord starting a row with *literally nothing* before
+it (not even a blank line — the chorus's very first chord, directly
+after the `CHORUS` header with no blank in between) goes unfixed, left
+as a standalone chord line above its lyric rather than merged inline.
+Harmless cosmetically, and a deliberate trade against the much larger
+risk of corrupting real content.
+
+Verified three ways, not just the one reported paste: (1) the exact
+reported text reconstructs into grammatically correct lines matching the
+real song, confirmed end to end through a real `paste` event on
+`#bodyInput` with the live preview updating correctly; (2)
+`fixPastedChordArtifact()` run against every real seed song's body
+returns each one byte-for-byte unchanged; (3) a real `Ctrl+Z` after a
+fix-triggering paste removes the inserted text cleanly (same as undoing
+any other paste), confirmed via `execCommand`'s own native undo
+integration rather than assumed from the code alone.
+
 ### Publish flow
 
 An "editor" is just a device that has a GitHub personal access token and a
