@@ -413,32 +413,52 @@ column it actually falls at (the combined length of every fragment
 before it).
 
 **How this is wired to `#bodyInput` is more specific than it looks, and
-got this wrong once already.** The first cut read the pasted text straight
-off the `paste` event itself (`e.clipboardData.getData('text/plain')`)
-and, if the fixer changed anything, called `e.preventDefault()` and
-inserted the fixed text in its place. That shipped, then was reported not
-doing anything at all on a real phone — the raw, unfixed paste went
-through completely untouched, as if the listener had never fired. The
-likely cause: that mobile browser doesn't reliably populate
-`clipboardData` for every paste action (a long-press "Paste" from the
-on-screen keyboard isn't the same code path as a physical Ctrl+V), so
-`pasted` came back empty and the handler's own `if (!pasted) return`
-silently bailed every time.
+got this wrong twice already.**
 
-Fixed by not reading the clipboard at all. `paste` now only sets a
-`pasteJustHappened` flag; the real check runs on the `input` event that
-follows, reading `bodyInput.value` directly — i.e. inspecting what the
-browser itself already put there, however it got the text in. This works
-identically regardless of whether `clipboardData` is populated, which
-paste mechanism was used, or even whether the insertion came from a paste
-at all (drag-and-drop text, voice dictation, a browser extension) as long
-as an `input` event follows it. When a fix is found, the whole field is
-replaced in one go — focus, select-all, then
+1. The first cut read the pasted text straight off the `paste` event
+   itself (`e.clipboardData.getData('text/plain')`) and, if the fixer
+   changed anything, called `e.preventDefault()` and inserted the fixed
+   text in its place. That shipped, then was reported not doing anything
+   at all on a real phone — the raw, unfixed paste went through
+   completely untouched, as if the listener had never fired. Likely
+   cause: that mobile browser doesn't reliably populate `clipboardData`
+   for every paste action (a long-press "Paste" from the on-screen
+   keyboard isn't the same code path as a physical Ctrl+V), so `pasted`
+   came back empty and the handler's own `if (!pasted) return` silently
+   bailed every time.
+2. Fixed by not reading the clipboard at all — `paste` set a flag, and
+   the real check ran on the following `input` event, reading
+   `bodyInput.value` directly instead (what the browser itself already
+   put there, however it got the text in). That shipped too, and was
+   reported broken again on a *second* real attempt, on the same device
+   — still completely unprocessed. The remaining assumption this one
+   still made: that a `paste` DOM event fires at all for every real paste
+   gesture. The same report suggests that's not reliably true either on
+   this browser — a long-press "Paste" isn't guaranteed to dispatch the
+   same event a physical Ctrl+V does, so the flag this version depended
+   on may simply never have been set.
+
+Fixed for real by dropping the `paste` event entirely — nothing here
+listens for it anymore. Every `input` event now just compares the
+field's new length against its length one event ago
+(`PASTE_LIKE_GROWTH`, currently 8 characters); a jump at least that big
+is treated as a bulk insertion worth checking (a paste by any mechanism,
+a drag-drop, voice dictation, a browser extension), while an ordinary
+single keystroke or IME character commit never grows the field anywhere
+near that much in one `input` event, so normal typing is never affected
+— confirmed directly by simulating character-by-character typing and
+checking nothing gets rewritten. This works regardless of whether
+`clipboardData` is populated, whether `paste` fires at all, or how the
+text actually arrived, since it never depends on any of that — only on
+what's actually sitting in the field once `input` fires. When a fix is
+found, the whole field is replaced in one go — focus, select-all, then
 `document.execCommand('insertText', ...)` where that's supported (so it
 stays a single native undo step), falling back to a direct `.value`
-assignment plus a dispatched `input` event only where `execCommand` isn't
-available either — with a toast naming what happened so it's never a
-silent surprise.
+assignment plus a dispatched `input` event only where `execCommand`
+isn't available either (`lastBodyValue` is resynced right after, so
+that follow-up `input` event's own length delta doesn't read as a second
+bulk insertion needing another pass) — with a toast naming what happened
+so it's never a silent surprise.
 
 **Why detecting this turned out to need three separate safety gates, not
 just "fragment, lone chord, fragment":** that raw shape alone is

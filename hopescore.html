@@ -4375,25 +4375,33 @@ function renderEditView(songId){
 
   // A chart pasted in from a chord-chart website commonly has its chords
   // come apart into their own lines on copy (see fixPastedChordArtifact()'s
-  // own comment). Checked on the 'input' event that follows a paste, by
-  // reading bodyInput.value directly, rather than reading the clipboard
-  // off the paste event itself (an earlier version did exactly that, via
-  // e.clipboardData.getData('text/plain')) -- confirmed for real that this
-  // never engages on at least one real mobile browser: the raw, unfixed
-  // paste went through completely untouched, as if the listener had never
-  // fired at all, most likely because that browser doesn't reliably
-  // populate clipboardData for every paste action (e.g. a long-press
-  // "Paste" from the on-screen keyboard, as opposed to a physical Ctrl+V).
-  // Reading the field's own value after the browser has already inserted
-  // the pasted text sidesteps that difference entirely -- it works the
-  // same regardless of how the browser itself got the text in, or whether
-  // it exposes clipboardData at all.
-  let pasteJustHappened = false;
-  bodyInput.addEventListener('paste', ()=>{ pasteJustHappened = true; });
+  // own comment). Checked on 'input' by reading bodyInput.value directly,
+  // not by reading the clipboard off a 'paste' event (an earlier version
+  // did exactly that, via e.clipboardData.getData('text/plain')) -- real
+  // paste event confirmed never engaging on at least one real mobile
+  // browser, most likely because that browser doesn't reliably populate
+  // clipboardData for every paste action. The *next* version still
+  // listened for 'paste' (just to set a flag, reading bodyInput.value on
+  // the input event that followed rather than clipboardData) -- safer
+  // against that specific gap, but still assumed a 'paste' DOM event
+  // fires at all for every real paste gesture on every real mobile
+  // browser, which the same report suggests isn't reliably true either
+  // (a long-press "Paste" from the on-screen keyboard is not guaranteed
+  // to be the same code path a physical Ctrl+V triggers the event
+  // listeners for). So this doesn't listen for 'paste' at all anymore --
+  // every 'input' event compares the field's new length against its
+  // length just before, and only treats it as a bulk insertion (a paste,
+  // a drag-drop, voice dictation, anything that lands many characters at
+  // once) worth checking when that jump is large; an ordinary single
+  // keystroke or IME character commit never grows the field anywhere
+  // near this much, so normal typing is never affected.
+  let lastBodyValue = bodyInput.value;
+  const PASTE_LIKE_GROWTH = 8;
   bodyInput.addEventListener('input', ()=>{
-    if (!pasteJustHappened) return;
-    pasteJustHappened = false;
     const current = bodyInput.value;
+    const grew = current.length - lastBodyValue.length;
+    lastBodyValue = current;
+    if (grew < PASTE_LIKE_GROWTH) return;
     const fixed = fixPastedChordArtifact(current);
     if (fixed === current) return;
     // Replace the whole field in one go (select-all, then insertText)
@@ -4414,6 +4422,12 @@ function renderEditView(songId){
       bodyInput.selectionStart = bodyInput.selectionEnd = Math.min(selStart, fixed.length);
       bodyInput.dispatchEvent(new Event('input', {bubbles:true}));
     }
+    // This rewrite itself fires another 'input' event (from execCommand
+    // or the dispatch above) -- keeping lastBodyValue in sync with it now
+    // means that follow-up event's own length delta reads as ~0 rather
+    // than whatever fixed's length happens to differ from current's,
+    // so it's never mistaken for a second bulk insertion to re-check.
+    lastBodyValue = bodyInput.value;
     toast('Fixed pasted chord line breaks (Ctrl+Z to undo)');
   });
 
