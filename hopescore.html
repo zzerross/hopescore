@@ -1633,6 +1633,59 @@ function realignChordOnly(chordTokens, transformFn){
   });
   return out;
 }
+const BAR_LINE_TOKENS = new Set(['|','||','|:',':|','||:',':||']);
+// A bar-notation measure that's really just one chord held for the whole
+// bar -- "| F / / / |" -- reads the same whether or not the hold slashes
+// are there, so they're dropped from the DISPLAY only, never from the
+// typed body text: a bar with more than one *distinct* chord in it
+// ("| Bb / / F/A |", a mid-bar chord change) keeps every slash exactly as
+// typed, since there the slashes are doing real work -- marking where in
+// the bar the change happens, same reason invariant 2 elsewhere in this
+// file never lets a token's own spelling get touched for layout reasons.
+// This is purely cosmetic and always-on, the same way Transpose/Nashville
+// never touch the stored chart text either (see openKeyModal()'s own
+// comment on that) -- re-running transposeBodyText()/"Transpose chart"
+// still rewrites the real slashes, untouched by this.
+function simplifyBarNotationTokens(tokens){
+  if (!tokens.some(t => BAR_LINE_TOKENS.has(t.text))) return tokens;
+  const out = [];
+  let bar = [];
+  // Recomputing columns (below) is itself a visible change -- a tighter
+  // or looser gap than whatever the editor originally typed -- so it must
+  // only happen when some bar's slashes were actually dropped. Without
+  // this flag, a bar-notation row with nothing to simplify (every bar
+  // already bare, or multi-chord, or empty) still got its spacing rebuilt
+  // for no reason, which is its own small unwanted side effect: confirmed
+  // for real against the seed library, where a couple of already-fine
+  // rows (e.g. "I Speak Jesus"'s own "| D/F# | x2 | G2 | D |") had their
+  // typed whitespace quietly tightened despite not containing a single
+  // hold-collapsible bar anywhere in them.
+  let anySimplified = false;
+  function flushBar(){
+    const chords = bar.filter(t => !MULTI_SLASH_RE.test(t.text));
+    const hasHold = bar.some(t => MULTI_SLASH_RE.test(t.text));
+    const distinct = new Set(chords.map(t => t.text));
+    if (hasHold && distinct.size === 1){ out.push(chords[0]); anySimplified = true; }
+    else out.push(...bar);
+    bar = [];
+  }
+  for (const t of tokens){
+    if (BAR_LINE_TOKENS.has(t.text)){ flushBar(); out.push(t); }
+    else bar.push(t);
+  }
+  flushBar();
+  if (!anySimplified) return tokens;
+  // Dropped hold tokens make the originally-typed columns meaningless
+  // (they assumed the holds would still be taking up that space), so
+  // columns are recomputed left to right with a plain single-space gap
+  // rather than reused from the source line.
+  let pos = 0;
+  return out.map((t, i) => {
+    const col = i === 0 ? 0 : pos + 1;
+    pos = col + t.text.length;
+    return { text: t.text, col };
+  });
+}
 function renderBlocks(blocks, transformFn){
   return blocks.map(b=>{
     if (b.type==='pair'){
@@ -1640,7 +1693,8 @@ function renderBlocks(blocks, transformFn){
       return {type:'pair', chordLine, lyricLine};
     }
     if (b.type==='chordOnly'){
-      return {type:'chordOnly', chordLine: realignChordOnly(b.chordTokens, transformFn)};
+      const tokens = simplifyBarNotationTokens(b.chordTokens);
+      return {type:'chordOnly', chordLine: realignChordOnly(tokens, transformFn)};
     }
     return b;
   });

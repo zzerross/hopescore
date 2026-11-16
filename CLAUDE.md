@@ -263,6 +263,55 @@ not-actually-a-chord-to-play annotation this was built to de-emphasize, so
 fading it slightly is consistent with the rule's own intent, not a
 mis-fire.
 
+### Bar-notation measures with one chord held the whole bar drop their slashes on display
+
+`"| F / / / |"` reads exactly the same as `"| F |"` — the slashes are
+just marking that F is held for the rest of the bar, not adding any
+information once there's nothing else in that bar to distinguish it
+from. `"| Bb / / F/A |"` is different: a real chord change partway
+through the bar, where the slashes are doing real work marking *where*
+in the bar it happens, so those stay exactly as typed. Requested
+directly as a two-part rule: collapse the holds when a bar has exactly
+one distinct chord in it, keep them when a bar has more than one.
+
+`simplifyBarNotationTokens(tokens)` (section 3, right before
+`renderBlocks()`) implements this, called from `renderBlocks()`'s
+`chordOnly` branch only (bar notation never appears in a chord+lyric
+`pair` — lyrics don't pair with bar lines). It groups a chordOnly row's
+tokens into bars by `BAR_LINE_TOKENS` (`|`, `||`, `|:`, `:|`, `||:`,
+`:||`), and for each bar: if it contains at least one hold token
+(`MULTI_SLASH_RE`, the same "any run of `/`" check `isChordToken()`
+already uses) *and* exactly one distinct non-hold chord, that bar is
+replaced with just the one chord; a bar with two or more distinct chords,
+zero chords (a pure hold-over bar like `"| / / / / |"`, continuing
+whatever the previous bar was — nothing to collapse *to*), or already
+just a bare chord with no hold tokens at all, passes through completely
+unchanged.
+
+**Purely cosmetic and always-on, never touching the stored chart text**
+— the same principle Transpose/Nashville/the melody-row fade above all
+already follow: `blocksToText()`/`transposeBodyText()` (what the
+"Transpose chart" button rewrites the body to) call `realignChordOnly()`
+directly and never go through this, so what the editor typed stays
+exactly as typed; only the read-only render pipeline
+(`computeSongRows()` → `renderBlocks()` → Chords/Present/Print) ever
+shows the simplified version.
+
+**A trap worth knowing if you touch this again**: the column
+recomputation this does *after* deciding what to drop
+(`simplifyBarNotationTokens`'s own tail, rebuilding left-to-right with a
+plain single-space gap, since the dropped tokens make the originally
+typed columns meaningless) must only run when something was actually
+simplified — an early version always rebuilt columns the moment a row
+had *any* bar-line token in it at all, regardless of whether any bar
+qualified for collapsing. That quietly tightened the typed spacing on
+rows with nothing to simplify too — caught for real against the seed
+library: `"I Speak Jesus"`'s own `"| D/F#        | x2 | G2         | D  |"`
+(no single-chord-plus-hold bar anywhere in it) had its whitespace
+rewritten for no reason before an `anySimplified` flag was added to make
+the whole function a hard no-op (returns the original `tokens` unchanged)
+whenever nothing actually qualified.
+
 ### Chords/Parts show-hide toggle: present in Chords view and Present, not Print
 
 Present has always had `Chords`/`Parts` toolbar buttons
