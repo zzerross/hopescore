@@ -652,6 +652,51 @@ natural key, matching the other three) or a single shared blob like
 printPrefs (document it as the exception, don't just skip merge logic by
 omission the way songs originally did — see "Known traps" below).
 
+### "Changes" checks against this device's cache, not live GitHub — on purpose
+
+`publishToGithub()` fetches the real live file and merges against it every
+time, so a Publish click is always safe regardless of staleness (see above).
+But the "Changes" modal (`openChangesModal()`, opened from the unpublished-
+changes banner) is a *preview* of that, and it used to be computed purely
+from this device's local cache (`cachedBaselines()`, same signatures
+`hasUnpublishedChanges()` uses) — meaning it could, in principle, say
+nothing about a concurrent change on another device the way the original
+mozfiles incident's banner didn't. The fix is **not** "swap the live
+content in as the comparison baseline" — that was tried first and is
+actively wrong. `unpublishedChangeItems()`'s "removed" detection means
+"baseline had this id, local doesn't" — a test of *this editor's own
+intent* relative to what they last knew, not a test of what's live. Feed
+it live content instead and a song `mergeSongsForPublish()` would
+correctly defer-in-untouched (this device's cached baseline never had it
+either) shows up as `"Song removed: X"` — a false alarm implying Publish
+would delete something it would actually just quietly keep. Caught by a
+direct test before this shipped: simulating the exact mozfiles staleness
+(cached baseline and local both lacking a song that's genuinely live) and
+swapping live content in as the baseline produced exactly that false
+"Song removed" line. `unpublishedChangeItems()`/`applyChangeSelection()`
+both take an optional `baselines` parameter now (for this exact
+distinction to be explicit in the code), but `openChangesModal()` always
+calls them with `cachedBaselines()` — never with live-fetched values.
+
+What a live fetch *can* safely add is a separate, read-only note
+(`computeLiveAwarenessNote()`) — "N things published elsewhere since you
+last synced, already handled automatically" — never an actionable +/-
+line, since there's nothing for this editor to decide about a change
+they're not even making. It diffs the live content against this device's
+own cached baseline *and* its local draft to find ids neither one has ever
+heard of (exactly the set the merge functions already defer in
+untouched), and says so; if the live fetch fails (offline, bad token), it
+degrades to a plain "couldn't check" note and leaves the item list exactly
+as the cached-only version already showed. `discardAllLocalChanges()` got
+the same live-vs-cached distinction for a different reason: it promises to
+restore "the currently published version," which only live content can
+actually deliver — reverting to the cached baseline when it's stale would
+quietly reset back to an old snapshot missing someone else's work, the
+same staleness class of bug as the original incident, just in the Discard
+direction instead of Publish. It now tries a live fetch
+(`fetchLiveBaselines()`) first and only falls back to `cachedBaselines()`
+if that fails.
+
 ### Why "unpublished changes" detection is more involved than it looks
 
 An editor's local `STATE` is their own draft, kept across reloads so an

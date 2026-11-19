@@ -665,6 +665,8 @@
     max-height:280px; overflow-y:auto; border-top:1px solid var(--paper-line);
   }
   .change-item-hint{ font-size:12px; margin:0 0 6px; }
+  .change-live-status{ font-size:12px; margin:0 0 10px; }
+  .change-live-failed{ color:var(--danger); }
   .change-item{
     display:flex; align-items:center; gap:10px; padding:7px 4px; font-size:13.5px;
     border-bottom:1px solid var(--paper-line); width:100%; text-align:left;
@@ -1963,9 +1965,18 @@ function unpublishedChangesSummary(){
 // the Changes modal lets each line be toggled published (+) or discarded
 // (−) on its own, so the icon means "what happens to this on Publish", not
 // "what kind of change this is" (that's in the text instead).
-function unpublishedChangeItems(){
+//
+// `baselines` defaults to this device's cached/local guess at what's
+// published (cachedBaselines()) -- the same thing hasUnpublishedChanges()
+// uses, and fine for the +/- badges that need to be instant and offline-
+// safe. openChangesModal() passes real live-fetched values instead once
+// its background refresh resolves (see fetchLiveBaselines()), so what the
+// modal actually shows reflects what's really on GitHub right now rather
+// than this device's possibly-stale snapshot of it.
+function unpublishedChangeItems(baselines){
+  baselines = baselines || cachedBaselines();
   const items = [];
-  const baseline = publishedBaselineSongs();
+  const baseline = baselines.songs;
   const baseMap = new Map(baseline.map(s => [s.id, s]));
   const localMap = new Map(STATE.songs.map(s => [s.id, s]));
   const norm = s => JSON.stringify({ title:s.title, keySemitone:s.keySemitone, keyIsMinor:s.keyIsMinor, keyPreferFlat:s.keyPreferFlat, description:s.description, body:s.body, videos:s.videos||[] });
@@ -1978,7 +1989,7 @@ function unpublishedChangeItems(){
   for (const b of baseline){
     if (!localMap.has(b.id)) items.push({ kind:'song', type:'remove', songId:b.id, text: `Song removed: ${splitTitleArtist(b.title).main}` });
   }
-  const baselineSetlists = publishedBaselineSetlists();
+  const baselineSetlists = baselines.setlists;
   const dates = new Set([...Object.keys(STATE.setlists||{}), ...Object.keys(baselineSetlists||{})]);
   for (const d of [...dates].sort()){
     const local = STATE.setlists[d] || [];
@@ -1996,7 +2007,7 @@ function unpublishedChangeItems(){
       for (const id of removed) items.push({ kind:'setlist', type:'remove', date:d, songId:id, text: `Setlist ${dateLabel}: removed ${songTitle(id)}` });
     }
   }
-  if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(publishedBaselinePrintPrefs())){
+  if (printPrefsSignature(STATE.printPrefs) !== printPrefsSignature(baselines.printPrefs)){
     items.push({ kind:'print', type:'edit', text:'Print layout changed' });
   }
   // Not itemized per (date, song) the way setlist membership is -- key
@@ -2004,22 +2015,25 @@ function unpublishedChangeItems(){
   // everything line (same treatment as print layout just above) is enough;
   // see applyChangeSelection()'s 'keyOverride' branch for what discarding
   // this line actually does.
-  if (setlistKeyOverridesSignature(STATE.setlistKeyOverrides) !== setlistKeyOverridesSignature(publishedBaselineSetlistKeyOverrides())){
+  if (setlistKeyOverridesSignature(STATE.setlistKeyOverrides) !== setlistKeyOverridesSignature(baselines.setlistKeyOverrides)){
     items.push({ kind:'keyOverride', type:'edit', text:'Setlist key overrides changed' });
   }
   return items;
 }
 // Applies a Changes-modal selection: items whose index is in `discardedIdx`
-// are individually reverted to the published baseline; everything else is
-// left as-is in STATE (so it goes out as part of the next publish). Songs
-// removed here that were newly-added locally are also stripped from every
-// local setlist, so discarding "New song: X" can't leave a setlist
-// pointing at a song that no longer exists.
-function applyChangeSelection(items, discardedIdx){
+// are individually reverted to `baselines` (defaulting to the cached one,
+// same reasoning as unpublishedChangeItems() above -- and it must be
+// whichever baselines actually produced `items`, live-fetched or not, or a
+// revert could restore the wrong snapshot); everything else is left as-is
+// in STATE (so it goes out as part of the next publish). Songs removed
+// here that were newly-added locally are also stripped from every local
+// setlist, so discarding "New song: X" can't leave a setlist pointing at a
+// song that no longer exists.
+function applyChangeSelection(items, discardedIdx, baselines){
   if (!discardedIdx.size) return;
-  const baselineSongs = publishedBaselineSongs();
-  const baselineSongMap = new Map(baselineSongs.map(s => [s.id, s]));
-  const baselineSetlists = publishedBaselineSetlists();
+  baselines = baselines || cachedBaselines();
+  const baselineSongMap = new Map(baselines.songs.map(s => [s.id, s]));
+  const baselineSetlists = baselines.setlists;
   discardedIdx.forEach(i => {
     const it = items[i];
     if (!it) return;
@@ -2044,9 +2058,9 @@ function applyChangeSelection(items, discardedIdx){
         STATE.setlists[it.date] = [...(STATE.setlists[it.date]||[]), it.songId];
       }
     } else if (it.kind === 'print'){
-      STATE.printPrefs = publishedBaselinePrintPrefs();
+      STATE.printPrefs = baselines.printPrefs;
     } else if (it.kind === 'keyOverride'){
-      STATE.setlistKeyOverrides = publishedBaselineSetlistKeyOverrides();
+      STATE.setlistKeyOverrides = baselines.setlistKeyOverrides;
     }
   });
   saveState();
@@ -3254,9 +3268,68 @@ function alertModal(title, message){
 // publishToGithub() flow -- which now only sees the "+" items as pending,
 // and shows its own confirm before actually committing -- also back to the
 // previous screen once that finishes.
+// What this editor's items (add/edit/remove) are classified against must
+// always stay the CACHED baseline, never the live-fetched content, even
+// though openChangesModal() below does fetch live content -- swapping it
+// in here was tried and is wrong: "removed" means "baseline had this id,
+// local doesn't," which is specifically about THIS editor's own intent
+// relative to what they last knew, not about the live file. Feeding the
+// live content in as `baseline` instead made a song mergeSongsForPublish()
+// would correctly defer-in-untouched (baseline never had it either) show
+// up as "Song removed: X" -- a false alarm implying this editor's publish
+// would delete something it would actually just quietly keep. Caught by a
+// direct test before this shipped: a device with no local knowledge of a
+// song that only exists live showed "Song removed" for it the moment live
+// content was substituted in as the comparison baseline.
+//
+// What a live fetch genuinely adds safely is a separate, read-only note
+// (computeLiveAwarenessNote() below) -- "N things published elsewhere
+// since you last synced, already handled automatically" -- never an
+// actionable +/- line, since there's nothing for this editor to decide
+// about a change they're not even making.
+async function computeLiveAwarenessNote(){
+  const live = await fetchLiveBaselines();
+  if (!live) return null;
+  const cached = cachedBaselines();
+  const localSongIds = new Set(STATE.songs.map(s=>s.id));
+  const cachedSongIds = new Set(cached.songs.map(s=>s.id));
+  // Live has it, but this device has never once heard of it (not in the
+  // cached baseline, not in the local draft either) -- exactly the set
+  // mergeSongsForPublish() defers in untouched rather than risking.
+  const unknownSongs = live.songs.filter(s => !cachedSongIds.has(s.id) && !localSongIds.has(s.id));
+  let unknownSetlistDates = 0;
+  for (const d of Object.keys(live.setlists||{})){
+    if (!Object.prototype.hasOwnProperty.call(cached.setlists||{}, d) && !Object.prototype.hasOwnProperty.call(STATE.setlists||{}, d)){
+      unknownSetlistDates++;
+    }
+  }
+  const count = unknownSongs.length + unknownSetlistDates;
+  if (!count) return { count: 0 };
+  const parts = [];
+  if (unknownSongs.length) parts.push(`${unknownSongs.length} song${unknownSongs.length>1?'s':''}`);
+  if (unknownSetlistDates) parts.push(`${unknownSetlistDates} setlist date${unknownSetlistDates>1?'s':''}`);
+  return { count, text: `${parts.join(' and ')} published elsewhere since you last synced -- will be kept automatically.` };
+}
+// The single entry point from the banner: an itemized, one-line-per-change
+// list, always computed from this device's own cached baseline (see the
+// comment on computeLiveAwarenessNote() above for why that stays fixed).
+// Tapping a line toggles it between + (published) and − (discarded --
+// struck through) -- everything starts at + (default: publish everything,
+// same as before there was any selection at all). Discard All ignores the
+// per-line selection and reverts everything, back to the previous screen.
+// Publish applies the current selection (discarding whatever's marked −,
+// via applyChangeSelection()) and then hands off to the normal
+// publishToGithub() flow -- which now only sees the "+" items as pending,
+// and shows its own confirm before actually committing -- also back to the
+// previous screen once that finishes.
+//
+// Separately, a live fetch runs in the background to populate a read-only
+// awareness note above the item list -- see computeLiveAwarenessNote().
 function openChangesModal(){
-  const items = unpublishedChangeItems();
+  const baselines = cachedBaselines();
+  const items = unpublishedChangeItems(baselines);
   const discarded = new Set();
+  let liveNote = { status: 'checking' }; // 'checking' | 'ok' | 'failed'
   function paint(){
     // Everything marked "-" means Publish would apply the selection (revert
     // it all) and then find nothing left to publish -- publishToGithub()'s
@@ -3265,9 +3338,17 @@ function openChangesModal(){
     // a toast the user has to go read. Discard All still makes sense here
     // (same end result, explicitly requested) so it stays enabled.
     const allDiscarded = items.length > 0 && discarded.size === items.length;
+    const statusLine = liveNote.status === 'checking'
+      ? `<p class="msg change-live-status">Checking against the latest published version…</p>`
+      : liveNote.status === 'failed'
+        ? `<p class="msg change-live-status change-live-failed">Couldn't reach GitHub to check the latest version -- showing this device's own last-known state instead.</p>`
+        : liveNote.count
+          ? `<p class="msg change-live-status">ℹ ${liveNote.text}</p>`
+          : `<p class="msg change-live-status change-live-ok">✓ Checked against the latest published version -- nothing you're missing.</p>`;
     modalBox.style.maxWidth = '420px';
     modalBox.innerHTML = `
       <h3>Unpublished changes</h3>
+      ${statusLine}
       ${items.length ? `
       <div class="modal-actions changes-top-actions">
         <button class="iconbtn danger" id="modalDiscard">Discard All</button>
@@ -3299,12 +3380,17 @@ function openChangesModal(){
       if (did){ closeModal(); render(); }
     };
     document.getElementById('modalPublish').onclick = ()=>{
-      applyChangeSelection(items, discarded);
+      applyChangeSelection(items, discarded, baselines);
       closeModal();
       publishToGithub();
     };
   }
   paint();
+  computeLiveAwarenessNote().then(note => {
+    if (!modalBackdrop.classList.contains('open')) return; // closed meanwhile
+    liveNote = note ? { status: 'ok', ...note } : { status: 'failed' };
+    paint();
+  });
 }
 let toastTimer=null;
 function toast(msg){
@@ -3969,10 +4055,20 @@ function renderTopbar(){
 async function discardAllLocalChanges(){
   const ok = await confirmModal('Discard local changes', "Replace your local songs, setlist, print layout, and setlist key overrides with the currently published version? This can't be undone.", 'Discard');
   if (!ok) return false;
-  STATE.songs = publishedBaselineSongs();
-  STATE.setlists = publishedBaselineSetlists();
-  STATE.printPrefs = publishedBaselinePrintPrefs();
-  STATE.setlistKeyOverrides = publishedBaselineSetlistKeyOverrides();
+  // "The currently published version" means what's actually live right
+  // now, not this device's possibly-stale cached guess at it -- so this
+  // tries a live fetch first and only falls back to the cached baseline
+  // (cachedBaselines()) if that fails (offline, token issue, etc). Without
+  // this, Discard on a stale device could silently reset to an old
+  // snapshot that's missing something someone else already published,
+  // the exact same staleness class of bug mergeSongsForPublish() fixes for
+  // the Publish direction -- Discard needed the same fix for the opposite
+  // direction.
+  const baselines = (await fetchLiveBaselines()) || cachedBaselines();
+  STATE.songs = baselines.songs;
+  STATE.setlists = baselines.setlists;
+  STATE.printPrefs = baselines.printPrefs;
+  STATE.setlistKeyOverrides = baselines.setlistKeyOverrides;
   saveState();
   toast('Discarded -- back to the published version');
   return true;
@@ -6065,7 +6161,75 @@ function mergeSetlistKeyOverridesForPublish(serverOverrides){
   }
   return merged;
 }
+// Same marker-search approach as the other three extractors above. There's
+// no mergePrintPrefsForPublish() to pair this with -- print prefs are the
+// one deliberate exception to "publish merges by default" (see CLAUDE.md's
+// Publish flow section) -- but openChangesModal() still wants the live
+// value to show an accurate "did someone else already change this" picture
+// instead of comparing against this device's possibly-stale cached baseline.
+function extractSeedPrintPrefsFromText(text){
+  const startMarker = '/* SEED_PRINT_START */';
+  const endMarker = '/* SEED_PRINT_END */';
+  const startIdx = text.indexOf(startMarker);
+  const endIdx = text.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return null;
+  const block = text.slice(startIdx + startMarker.length, endIdx);
+  const m = block.match(/const seedPrintPrefs\s*=\s*([\s\S]*?);\s*$/);
+  if (!m) return null;
+  try{ return JSON.parse(m[1]); }catch(e){ return null; }
+}
+// The four cached/local "what do I think is published" baselines
+// unpublishedChangeItems()/applyChangeSelection() compare against by
+// default -- bundled into one object so openChangesModal() can swap in the
+// real live-fetched values (see fetchLiveBaselines()) without those two
+// functions needing to know where their baselines actually came from.
+function cachedBaselines(){
+  return {
+    songs: publishedBaselineSongs(),
+    setlists: publishedBaselineSetlists(),
+    printPrefs: publishedBaselinePrintPrefs(),
+    setlistKeyOverrides: publishedBaselineSetlistKeyOverrides(),
+  };
+}
+// Fetches the real current GitHub content and extracts all four
+// publishable fields from it, for openChangesModal()'s live-refresh --
+// the actual answer to "what would publishing right now change", as
+// opposed to cachedBaselines()'s answer to "what did this device last
+// know to be published", which can be stale (see the mergeSongsForPublish()
+// comment above for exactly how stale caused real data loss once already).
+// Falls back to null on any failure (no token, offline, markers not found)
+// so the caller can keep showing the cached-baseline view instead.
+async function fetchLiveBaselines(){
+  try{
+    const { text } = await fetchLiveFileText();
+    const songs = extractSeedSongsFromText(text);
+    const setlists = extractSeedSetlistsFromText(text);
+    const printPrefs = extractSeedPrintPrefsFromText(text);
+    const setlistKeyOverrides = extractSeedSetlistKeyOverridesFromText(text);
+    if (songs === null || setlists === null || printPrefs === null || setlistKeyOverrides === null) return null;
+    return { songs, setlists, printPrefs, setlistKeyOverrides };
+  }catch(e){ return null; }
+}
 
+// Fetches hopescore.html's current live content straight from the GitHub
+// Contents API -- the one source of truth for "what's actually published
+// right now," as opposed to this device's own (possibly stale) local
+// STATE or cached publish baseline. Used both by publishToGithub() itself
+// (to merge against before writing back) and by openChangesModal() (to
+// refresh its preview against the real current state instead of just this
+// device's local guess -- see the comment on openChangesModal() for why
+// that distinction matters).
+async function fetchLiveFileText(){
+  const token = getGhToken();
+  const apiBase = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/contents/${GH_FILE_PATH}`;
+  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' };
+  // No ref param: the Contents API defaults to the repo's own default
+  // branch, so this works regardless of what that branch is named.
+  const getRes = await fetch(apiBase, { headers: authHeaders });
+  if (!getRes.ok) throw new Error(`Couldn't read the file from GitHub (${getRes.status})`);
+  const fileData = await getRes.json();
+  return { text: base64ToUtf8(fileData.content), sha: fileData.sha };
+}
 async function publishToGithub(){
   const token = getGhToken();
   const editorName = getGhEditorName();
@@ -6109,14 +6273,7 @@ async function publishToGithub(){
   if (!ok) return;
   toast('Publishing…');
   try{
-    const apiBase = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/contents/${GH_FILE_PATH}`;
-    const authHeaders = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' };
-    // No ref param: the Contents API defaults to the repo's own default
-    // branch, so this works regardless of what that branch is named.
-    const getRes = await fetch(apiBase, { headers: authHeaders });
-    if (!getRes.ok) throw new Error(`Couldn't read the file from GitHub (${getRes.status})`);
-    const fileData = await getRes.json();
-    const currentText = base64ToUtf8(fileData.content);
+    const { text: currentText, sha } = await fetchLiveFileText();
     const startMarker = '/* SEED_SONGS_START */';
     const endMarker = '/* SEED_SONGS_END */';
     const startIdx = currentText.indexOf(startMarker);
@@ -6190,13 +6347,14 @@ async function publishToGithub(){
     let nameHash = 0;
     for (let i=0;i<editorName.length;i++) nameHash = (nameHash*31 + editorName.charCodeAt(i)) >>> 0;
     const authorEmail = `editor-${nameHash.toString(36)}@hopescore.local`;
+    const apiBase = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/contents/${GH_FILE_PATH}`;
     const putRes = await fetch(apiBase, {
       method: 'PUT',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: `Update songs & setlist from HopeScore app (${mergedSongs.length} songs) — ${editorName}`,
         content: utf8ToBase64(newText),
-        sha: fileData.sha,
+        sha: sha,
         // No branch param here either, for the same reason as the GET
         // above -- omitting it commits to the repo's own default branch.
         author: { name: editorName, email: authorEmail },
