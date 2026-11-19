@@ -615,7 +615,7 @@ the token can publish — there's no per-user permission model beyond "has
 the shared token or not." Publishing (`publishToGithub()`, section 9):
 
 1. Fetches the current `hopescore.html` from GitHub via the Contents API.
-2. Rewrites the four `SEED_*` blocks with the local `STATE.songs` /
+2. Rewrites the four `SEED_*` blocks with the merged `STATE.songs` /
    merged setlists / `STATE.printPrefs` / merged `STATE.setlistKeyOverrides`,
    serialized with `JSON.stringify`.
 3. Commits the new file back via a `PUT` to the Contents API, with the
@@ -624,12 +624,33 @@ the shared token or not." Publishing (`publishToGithub()`, section 9):
 4. GitHub Pages redeploys the new `hopescore.html` automatically
    (typically under a minute).
 
-Setlists merge rather than overwrite on publish (`mergeSetlistsForPublish()`),
-and setlist key overrides merge the same way, keyed by (date, songId)
-instead of array membership (`mergeSetlistKeyOverridesForPublish()`) — so
-two editors building different weeks' setlists, or setting different
-overrides, concurrently don't clobber each other. Songs do not merge —
-last publish wins for a given song id.
+**Publish's default behavior is to merge against whatever's actually live
+on GitHub right now, not to overwrite it wholesale with this device's own
+local copy.** This holds for all three of the keyed/collection-shaped
+publishable fields: songs merge by id (`mergeSongsForPublish()`), setlists
+merge by date (`mergeSetlistsForPublish()`), and setlist key overrides
+merge by (date, songId) (`mergeSetlistKeyOverridesForPublish()`) — so two
+editors adding different songs, building different weeks' setlists, or
+setting different overrides, concurrently don't clobber each other. Each
+of the three follows the same shape: for anything this editor's local
+draft actually has an opinion on (an id/date/key it's ever had locally),
+local wins (including a genuine local deletion, detected by comparing
+against this editor's own last-known-published baseline — present in the
+baseline but absent locally means *this device* removed it on purpose, not
+"never knew about it"); for anything local has no opinion on at all,
+whatever's actually live right now wins, deferring to a concurrent
+change from elsewhere this device simply hasn't seen yet.
+
+`STATE.printPrefs` is the **one deliberate exception** to "publish merges
+by default" — it's a single small shared object (font size, columns, etc.
+for the whole print batch), not keyed by date or id like the other three,
+so there's no reasonable per-field merge to do: two editors' print
+preferences for the same batch can't both "win" at once. Last editor to
+publish simply wins here, on purpose — if you add a fifth publishable
+field, decide explicitly whether it's collection-shaped (merge by its own
+natural key, matching the other three) or a single shared blob like
+printPrefs (document it as the exception, don't just skip merge logic by
+omission the way songs originally did — see "Known traps" below).
 
 ### Why "unpublished changes" detection is more involved than it looks
 
@@ -1076,6 +1097,56 @@ now fixed, but worth understanding why):
   present but empty" stay distinguishable the same way — collapsing them
   with `|| []`/`|| {}` is exactly how both this bug and the earlier
   `setlistKeyOverrides` rollout-trap bug happened.
+- **Songs had no merge logic at all until this was hit for real.** Unlike
+  setlists and setlist key overrides (both fixed for exactly this class of
+  bug already, see above), `publishToGithub()` used to serialize
+  `STATE.songs` — this device's own local list, whatever it happened to be
+  — straight into the `SEED_SONGS` block, wholesale, with no comparison
+  against what was actually live. That's harmless as long as this device's
+  local list is a superset of whatever's live, which is normally true (the
+  page loads with the current live list already in it, and local edits
+  only ever add to or change entries within it) — but breaks the instant a
+  device's tab has been open since *before* a newer publish happened
+  elsewhere. Shipped for real: a song added and published directly to the
+  repo got published right back out of existence minutes later by a
+  concurrent Publish from a device that simply hadn't reloaded since
+  before that song existed — its local list was missing the song, so
+  publishing overwrote the live file with that incomplete list. Confirmed
+  directly: diffing the two commits showed the second one's only change
+  was removing exactly the first one's added lines.
+
+  Fixed with `mergeSongsForPublish()`, the same by-id treatment
+  `mergeSetlistsForPublish()`/`mergeSetlistKeyOverridesForPublish()` already
+  use, just keyed by song id instead of date/(date,songId):
+  `extractSeedSongsFromText()` reads whatever's actually live at publish
+  time (same marker-search approach as the setlist extractor), and for
+  each id anywhere across server/local/baseline — this editor's own local
+  version wins whenever their local list actually has that id (a genuine
+  edit conflict between two editors on the *same* song still resolves
+  last-publish-wins for that song's fields, the same already-accepted
+  tradeoff as before); when local doesn't have the id, `publishedBaselineSongs()`
+  (this editor's own last-known-published snapshot) decides whether that's
+  a real local deletion (baseline had it, local doesn't → honor the
+  delete, don't resurrect it from server) or pure staleness (baseline
+  never had it either → this device never knew it existed, so defer
+  entirely to whatever's live). The merged result is also what gets cached
+  as this device's own new baseline and adopted into `STATE.songs`
+  afterward (`STATE.songs = mergedSongs`), mirroring exactly how a
+  successful setlist/override publish already adopts its own merged
+  result locally — otherwise this device's view wouldn't reflect a
+  just-deferred-in song from elsewhere until its next reload, and its own
+  baseline cache would immediately read as stale again.
+
+  Verified with four scenarios run directly against `mergeSongsForPublish()`
+  (a song known only to the server deferred in correctly; a genuine local
+  deletion honored even though the server still had it; a local edit to an
+  existing song winning over the server's unedited copy; a brand-new local
+  song included) and one full end-to-end run through the real
+  `publishToGithub()` with the GitHub Contents API mocked via
+  `page.route()` — reproducing the exact incident shape (local list
+  missing a song that's actually live, plus an unrelated real local change
+  to trigger the publish) and confirming the published output still
+  contains the song that would previously have been wiped.
 - **This is a single shared GitHub token model**, not per-user auth.
   Don't build anything that assumes a song or setlist's "owner" can be
   reliably identified beyond the free-text editor name stamped on the git

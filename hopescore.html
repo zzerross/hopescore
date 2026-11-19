@@ -3393,8 +3393,8 @@ function librarySortTitleKey(song){ return splitTitleArtist(song.title).main.toL
 function compareSongsForLibrary(a, b, by){
   switch(by){
     // createdAt never moves after a song is first added (see the "+" form
-    // and publishToGithub()'s songsForExport), so this is a pure "when was
-    // this first added" order, independent of any later edits.
+    // and songToExportShape()), so this is a pure "when was this first
+    // added" order, independent of any later edits.
     case 'added': {
       const d = (a.createdAt||0) - (b.createdAt||0);
       return d !== 0 ? d : librarySortTitleKey(a).localeCompare(librarySortTitleKey(b));
@@ -5830,6 +5830,90 @@ function openGhSettingsModal(onSaved){
   };
 }
 
+// The export shape a song is serialized to for the SEED_SONGS block --
+// factored out so publishToGithub() and mergeSongsForPublish() build
+// identically-shaped objects (both the local list being published and the
+// live list being merged against need to agree on shape, or the merge's
+// own equality checks against baseline/signatures would be comparing
+// apples to oranges).
+function songToExportShape(s){
+  const out = { title: s.title, keySemitone: s.keySemitone, keyIsMinor: s.keyIsMinor };
+  if (s.keyPreferFlat !== undefined) out.keyPreferFlat = s.keyPreferFlat;
+  if (s.videos && s.videos.length) out.videos = s.videos.map(v=>({url:v.url, key:v.key||'', label:v.label||''}));
+  out.description = s.description; out.body = s.body; out.id = s.id;
+  out.createdAt = s.createdAt; out.updatedAt = s.updatedAt;
+  return out;
+}
+// Reads whatever songs block is currently on GitHub, so publishing can merge
+// against the real live state instead of blindly overwriting it with this
+// device's own (possibly stale) local copy -- see mergeSongsForPublish() for
+// why that matters. Same marker-search approach as
+// extractSeedSetlistsFromText() below.
+function extractSeedSongsFromText(text){
+  const startMarker = '/* SEED_SONGS_START */';
+  const endMarker = '/* SEED_SONGS_END */';
+  const startIdx = text.indexOf(startMarker);
+  const endIdx = text.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return null;
+  const block = text.slice(startIdx + startMarker.length, endIdx);
+  const m = block.match(/const seedSongs\s*=\s*([\s\S]*?);\s*$/);
+  if (!m) return null;
+  try{ return JSON.parse(m[1]); }catch(e){ return null; }
+}
+// Songs used to have no merge logic at all -- publishToGithub() just
+// serialized STATE.songs (this device's own local list) straight into the
+// SEED_SONGS block, wholesale. That's fine as long as this device's local
+// list is a superset of whatever's actually live, which is normally true
+// (loading the page pulls in the current live list, and edits only ever add
+// to or change entries within it) -- but breaks the instant it isn't: a
+// device that's had the page open since before someone else's more recent
+// publish has a local list that's missing that other publish's new/changed
+// songs entirely, and publishing from it overwrites the live file with that
+// incomplete list, silently deleting whatever it was missing. Shipped for
+// real: a brand-new song added directly to this repo got published right
+// back out of existence by a concurrent Publish from a device that simply
+// hadn't reloaded since before that song existed.
+//
+// Fixed the same way setlists/setlistKeyOverrides already merge -- by id
+// instead of blanket "local wins" or "server wins": for each song id seen
+// anywhere (server/local/baseline), local's own version wins whenever this
+// device's local list actually has that id (preserving the existing, already-
+// accepted "last publish wins for a song's own edited fields" behavior for a
+// genuine edit conflict). When local doesn't have the id, the question is
+// just membership -- was it removed on purpose, or never seen at all -- and
+// that's answered by comparing against this editor's own last-known-
+// published baseline (publishedBaselineSongs()), the exact same "did THIS
+// editor actually change it" signal setlists/overrides already use: baseline
+// having the id but local not having it means this device genuinely deleted
+// it (don't resurrect it from server); baseline not having it either means
+// this device never knew it existed in the first place (pure staleness, not
+// intent), so it defers entirely to whatever's live.
+function mergeSongsForPublish(serverSongs){
+  const baseline = publishedBaselineSongs();
+  const localMap = new Map(STATE.songs.map(s => [s.id, songToExportShape(s)]));
+  const baseIds = new Set((baseline||[]).map(s => s.id));
+  const serverList = serverSongs || [];
+  const merged = [];
+  const seen = new Set();
+  // Local order first -- keeps this device's own additions/reordering of
+  // its own songs stable instead of re-sorting around server order.
+  for (const s of STATE.songs){
+    merged.push(localMap.get(s.id));
+    seen.add(s.id);
+  }
+  // Anything live on the server that this device never touched (not in its
+  // local list, and not in its own baseline either) gets deferred in as-is,
+  // in server order -- a concurrent addition/edit from elsewhere that this
+  // device simply doesn't know about yet.
+  for (const s of serverList){
+    if (seen.has(s.id)) continue;
+    if (baseIds.has(s.id)) continue; // genuinely deleted on this device; don't resurrect
+    merged.push(s);
+    seen.add(s.id);
+  }
+  return merged;
+}
+
 // Reads whatever setlists block is currently on GitHub, so publishing can
 // merge against the real live state instead of blindly overwriting it with
 // this device's own (possibly stale) local copy -- see
@@ -6040,20 +6124,17 @@ async function publishToGithub(){
     if (startIdx === -1 || endIdx === -1 || endIdx < startIdx){
       throw new Error('Could not find the song data section in the file on GitHub');
     }
-    const songsForExport = STATE.songs.map(s=>{
-      const out = { title: s.title, keySemitone: s.keySemitone, keyIsMinor: s.keyIsMinor };
-      if (s.keyPreferFlat !== undefined) out.keyPreferFlat = s.keyPreferFlat;
-      if (s.videos && s.videos.length) out.videos = s.videos.map(v=>({url:v.url, key:v.key||'', label:v.label||''}));
-      out.description = s.description; out.body = s.body; out.id = s.id;
-      // Carried through so "Recently added/edited" sort (see
-      // compareSongsForLibrary()) reflects real history across devices --
-      // seedState() below only fills these in when missing, it doesn't
-      // stamp over real values, so once a song's timestamps are published
-      // once they stay stable from here on.
-      out.createdAt = s.createdAt; out.updatedAt = s.updatedAt;
-      return out;
-    });
-    const newBlock = `${startMarker}\n  const seedSongs = ${JSON.stringify(songsForExport, null, 2)};\n  ${endMarker}`;
+    const serverSongs = extractSeedSongsFromText(currentText);
+    if (serverSongs === null){
+      throw new Error('Could not find the song data section in the file on GitHub');
+    }
+    // Carried through so "Recently added/edited" sort (see
+    // compareSongsForLibrary()) reflects real history across devices --
+    // seedState() below only fills these in when missing, it doesn't stamp
+    // over real values, so once a song's timestamps are published once they
+    // stay stable from here on.
+    const mergedSongs = mergeSongsForPublish(serverSongs);
+    const newBlock = `${startMarker}\n  const seedSongs = ${JSON.stringify(mergedSongs, null, 2)};\n  ${endMarker}`;
     let newText = currentText.slice(0, startIdx) + newBlock + currentText.slice(endIdx + endMarker.length);
 
     const serverSetlists = extractSeedSetlistsFromText(currentText);
@@ -6068,8 +6149,14 @@ async function publishToGithub(){
     const slBlock = `${slStartMarker}\n  const seedSetlists = ${JSON.stringify(mergedSetlists, null, 2)};\n  ${slEndMarker}`;
     newText = newText.slice(0, slStartIdx) + slBlock + newText.slice(slEndIdx + slEndMarker.length);
 
-    // Print prefs are a single small shared object (not per-date like
-    // setlists), so last editor to publish simply wins -- no merge needed.
+    // Every other publishable field merges against the live content fetched
+    // above rather than overwriting it -- print prefs are the one
+    // deliberate exception. It's a single small shared object (not keyed by
+    // date/id like the other three), so there's no reasonable per-field
+    // merge to do: two editors' font-size/column preferences for the whole
+    // batch can't both "win" at once the way two different setlist dates or
+    // two different songs can. Last editor to publish simply wins here, on
+    // purpose.
     const pStartMarker = '/* SEED_PRINT_START */';
     const pEndMarker = '/* SEED_PRINT_END */';
     const pStartIdx = newText.indexOf(pStartMarker);
@@ -6107,7 +6194,7 @@ async function publishToGithub(){
       method: 'PUT',
       headers: { ...authHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: `Update songs & setlist from HopeScore app (${STATE.songs.length} songs) — ${editorName}`,
+        message: `Update songs & setlist from HopeScore app (${mergedSongs.length} songs) — ${editorName}`,
         content: utf8ToBase64(newText),
         sha: fileData.sha,
         // No branch param here either, for the same reason as the GET
@@ -6119,13 +6206,16 @@ async function publishToGithub(){
       const errBody = await putRes.json().catch(()=>({}));
       throw new Error(errBody.message || `GitHub rejected the update (${putRes.status})`);
     }
-    setLastPublishedSongs(STATE.songs);
+    setLastPublishedSongs(mergedSongs);
     setLastPublishedSetlists(mergedSetlists);
     setLastPublishedPrintPrefs(getPrintPrefs());
     setLastPublishedSetlistKeyOverrides(mergedOverrides);
     // Adopt the merged result locally too, so this editor immediately sees
     // whatever anyone else had already published (e.g. another editor's
-    // songs on the same date's setlist) rather than just their own picks.
+    // songs on the same date's setlist, or a song added directly to the
+    // repo while this device's tab was open) rather than just their own
+    // picks.
+    STATE.songs = mergedSongs;
     STATE.setlists = mergedSetlists;
     STATE.setlistKeyOverrides = mergedOverrides;
     saveState();
