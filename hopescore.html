@@ -1305,13 +1305,37 @@ function lineIsChordLine(line){
 // chord-only line silently paired with that text as if it were a lyric
 // (same trap as the "BRIDGE (x2)" one documented below, just a
 // differently-shaped suffix this regex's suffix group didn't cover yet).
-const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*\(?(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\)?\s*:?\s*\]?$/i;
+//
+// The first alternative (digits immediately followed by a single non-x
+// letter, e.g. "1A"/"1B"/"2C") is a *variant* label, not a repeat count --
+// "Bridge 1A"/"Bridge 1B" for two related-but-distinct takes on a bridge,
+// the same real convention that already motivated the "##" custom-name
+// escape hatch, except editors keep typing it as plain text without
+// remembering "##" (confirmed for real: an editor hand-edited a song to
+// use exactly this shape with no "##", and without this alternative that
+// silently mis-split into a truncated "Bridge 1" header plus a stray
+// floating bare-chord line for the lone leftover letter -- "A"/"B" both
+// happen to also be valid bare chord roots, which is exactly how a
+// trailing single letter manages to look chord-line-shaped on its own).
+// It has to come *before* the plain digit-count alternative in the
+// alternation, not after -- SECTION_WORD_PREFIX_RE has no trailing $, so
+// without $ forcing the engine to find the longest/only consumption that
+// lets the whole pattern match, it just takes whichever alternative
+// matches first and stops there; listed second, the plain digit-count
+// alternative would already have successfully consumed just the "1" and
+// left "A" as remainder before the engine ever tried the variant-letter
+// alternative. The letter class explicitly excludes x/X so "4x"/"(4X)"
+// keep matching the repeat-count alternative exactly as before (a real,
+// already-shipped, already-documented behavior this must not disturb).
+const SECTION_WORD_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*\(?(?:([0-9]+)([A-WYZa-wyz])|([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\)?\s*:?\s*\]?$/i;
 function sectionLabelFromMatch(m){
   const word = /pre-?chorus/i.test(m[1]) ? 'Pre-Chorus' : m[1][0].toUpperCase()+m[1].slice(1).toLowerCase();
-  // repeat count can be written as "2x" (number first) or "x2" (x first, e.g. "Bridge x2")
+  // repeat count can be written as "2x" (number first) or "x2" (x first, e.g.
+  // "Bridge x2"); a variant letter ("1A") is distinct from both.
   let suffix = '';
-  if (m[2]) suffix = m[2] + (m[3]?'x':'');
-  else if (m[4]) suffix = 'x' + (m[5]||'');
+  if (m[2]) suffix = m[2] + m[3].toUpperCase();
+  else if (m[4]) suffix = m[4] + (m[5]?'x':'');
+  else if (m[6]) suffix = 'x' + (m[7]||'');
   return suffix ? `${word} ${suffix}` : word;
 }
 function detectSectionLabel(trimmed){
@@ -1332,7 +1356,7 @@ function detectSectionLabel(trimmed){
 // of these words ("Repeat after me...", "Ending up right here...") --
 // *only* matches when what's left after the header genuinely still looks
 // like a chord line on its own.
-const SECTION_WORD_PREFIX_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*\(?(?:([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\)?\s*:?\s*\]?/i;
+const SECTION_WORD_PREFIX_RE = /^\[?\s*(verse|chorus|bridge|intro|outro|tag|pre-?chorus|interlude|refrain|ending|repeat|vamp|instrumental|breakdown)[\s.]*\(?(?:([0-9]+)([A-WYZa-wyz])|([0-9]+)\s*(x)?|(x)\s*([0-9]*))?\)?\s*:?\s*\]?/i;
 // Returns {name, rest} if `trimmed` is a section name followed by more
 // content that's itself a valid chord line (the glued-count or glued-
 // progression cases above); null otherwise, including when the ENTIRE line

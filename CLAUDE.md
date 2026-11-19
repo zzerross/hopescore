@@ -902,6 +902,61 @@ now fixed, but worth understanding why):
   not just one — this bug class has now hit both of them independently
   twice each.
 
+  A sixth shape, same bug class a third time: `"Bridge 1A"`/`"Bridge
+  1B"` — a *variant letter* suffix (two related-but-distinct takes on a
+  bridge), not a repeat count, and neither regex's suffix group had any
+  alternative for a bare trailing letter at all. Added directly to a song
+  (see "Changes checks against this device's cache" above for how that
+  song got there) using the `##` custom-name escape hatch specifically to
+  dodge this gap — and within minutes, a real editor hand-editing that
+  same song through the normal UI retyped it as plain `"Bridge 1A"`/
+  `"Bridge 1B"` with no `##`, exactly the shape this gap doesn't cover,
+  confirming editors can't be relied on to remember a manual escape hatch
+  exists. Without a fix, `"Bridge 1A"` fails `detectSectionLabel()`
+  outright (digit followed by a letter matches neither the digit-count nor
+  the x-count alternative), then `splitLeadingSectionLabel()`'s prefix
+  match consumes just `"Bridge 1"` (the plain digit-count alternative,
+  tried before any letter-aware one existed) and leaves `"A"` as
+  `rest` — which passes `lineIsChordLine()` on its own, since a bare `"A"`
+  is *also* a valid chord root (the exact same ambiguity the `"BRIDGE
+  (4X)"` gate above already has to watch for) — so the whole line splits
+  into a truncated `"Bridge 1"` header plus a stray floating bare-chord
+  `"A"` line with no lyric, instead of one `"Bridge 1A"` header. `"Bridge
+  1B"` hits the identical trap since `"B"` is a valid root too.
+
+  Fixed by adding a `([0-9]+)([A-WYZa-wyz])` alternative (digits directly
+  followed by exactly one letter) to both regexes' suffix group, with the
+  letter class explicitly excluding `x`/`X` so `"4x"`/`"(4X)"` keep
+  matching the existing repeat-count alternative exactly as before — a
+  letter class that included `x` would silently reclassify `"Bridge 4x"`
+  as a variant-letter label (`"4X"`) instead of a repeat count, changing
+  already-shipped, already-documented display text. **The new alternative
+  has to be listed *first* in the alternation, not appended after the
+  existing ones** — `SECTION_WORD_PREFIX_RE` has no trailing `$`, so
+  without one forcing the engine to need the longest/only consumption
+  that lets the whole pattern match, it just takes whichever alternative
+  succeeds first and stops there. Listed second, the plain digit-count
+  alternative would already have successfully matched just `"1"` (its
+  own `(x)?` is optional, so it doesn't need a letter to succeed) and
+  stopped, leaving `"A"` as `rest` before the engine ever tried the
+  variant-letter alternative — confirmed for real by trying it in that
+  order first and reproducing the exact truncated-header/stray-chord
+  split this was meant to fix. `sectionLabelFromMatch()`'s group indices
+  shifted accordingly (variant-letter groups first, then digit-count,
+  then x-first) and `.toUpperCase()` normalizes the letter on display
+  (`"bridge 1a"` → `"Bridge 1A"`), matching how the word itself is already
+  case-normalized.
+
+  Verified with a full-library audit comparing every song's complete
+  `parseBody()` block output before and after this change (keyed by song
+  `id`, not title — the audit's first pass wrongly flagged an unrelated
+  song as a regression before it turned up the library has two genuinely
+  different song entries sharing one title, a pre-existing duplicate
+  unrelated to this fix, worth a separate look sometime but not touched
+  here): the only real difference anywhere in the library was the
+  intended one, `"Bridge 1A"`/`"Bridge 1B"` resolving to proper whole-song
+  headers instead of truncated-plus-stray-chord splits.
+
   Three more unrelated chart-notation gaps turned up in the same audit, in
   one song (`MAGNIFICENT`): an en dash (`"–"`) used as a chord separator in
   one spot of an otherwise plain-hyphen progression — almost certainly a
