@@ -333,7 +333,7 @@ branch. If this feature ever looks like it's "not working" for a
 specific line again, check what *type* of block `parseBody()` actually
 produced for it before assuming the bug is in this function.
 
-### Chords/Parts show-hide toggle: present in Chords view and Present, not Print
+### Chords/Parts/Lyrics show-hide toggles: present in Chords view and Present, not Print
 
 Present has always had `Chords`/`Parts` toolbar buttons
 (`getPresentShowChords()`/`getPresentShowSections()`, device-wide
@@ -362,14 +362,54 @@ should actually be the *same* setting rather than two independent ones)
 if it turns out people expect the two toggles to behave identically, not
 just look identical.
 
-Print remains deliberately excluded — same reasoning as it being excluded
-from the key/chord display modes above: giving Print a lyrics-only or
-parts-only mode would be a new capability for a view that currently just
-prints the chart as written, not an extension of something it already has
-(print already has its own `showChords`/`showSections` in `printPrefs`,
-team-published rather than device-local, but that's a batch-wide printed-
-output setting answering "do we want chords on the printed sheet at all,"
-not the same decision as toggling a single live view mid-read).
+**A third toggle, `Lyrics`, was added the same way** — requested directly
+for accompanists reading chords on a small phone screen, who want the
+progression without the words taking up space. It's the mirror image of
+the existing `Chords` toggle rather than a new mechanism:
+`getPresentShowLyrics()`/`getSongViewShowLyrics()` (same device-wide-not-
+per-song shape, default `true`) and `#presentLyricsToggle`/
+`#songLyricsToggle` buttons next to `Parts` in both toolbars.
+`filterPresentRows(rows, showChords, showSections, showLyrics)` grew a
+fourth parameter that drops any row whose class list includes
+`row-lyric` — checked with `r.cls.split(' ').includes('row-lyric')`,
+not `r.cls === 'row-lyric'`, because a whole-line YouTube link row is
+`'row-lyric row-link'` (two classes); a strict `===` would silently leave
+link rows showing in chords-only mode. Every existing caller of
+`filterPresentRows()` had to be updated for the new fourth parameter,
+including the two print callers (`renderPrintSongAt()`/
+`searchAutoPrintLayout()`), which now pass a hardcoded `true` — print
+still has no lyrics-only/chords-only concept at all (see below), so
+this just keeps their behavior unchanged rather than silently defaulting
+`showLyrics` to `undefined` (falsy) and hiding lyrics in print by
+accident. Deliberately **not** given its own font-size bucket the way
+chords-hidden gets `'prompter'` — stays on whatever bucket `showChords`
+already picked, the same minimal choice already made for the Chords
+view's own `Chords`/`Parts` toggles above (no evidence yet that
+chords-only reading wants a different default size than normal reading;
+revisit if that turns out wrong).
+
+Print remains deliberately excluded from all three toggles — same
+reasoning as it being excluded from the key/chord display modes above:
+giving Print a lyrics-only, chords-only, or parts-only mode would be a
+new capability for a view that currently just prints the chart as
+written, not an extension of something it already has (print already has
+its own `showChords`/`showSections` in `printPrefs`, team-published
+rather than device-local, but that's a batch-wide printed-output setting
+answering "do we want chords on the printed sheet at all," not the same
+decision as toggling a single live view mid-read).
+
+### Default line spacing lowered to 1.15x
+
+`LINE_SPACING_DEFAULT` (`{chords: ..., prompter: ...}`, next to
+`getLineSpacing()`/`setLineSpacing()`) was `1.45` for both buckets;
+changed to `1.15` for both, requested alongside the `Lyrics` toggle above
+(more legible chords packed into less vertical space matters most on
+exactly the small-phone screen that toggle targets). Only changes the
+*default* — a device/song that already has its own stored line-spacing
+value (`STATE.settings.lineSpacingBySongView`) is untouched, same as
+every other per-song-per-view default in this app. Print's own line
+spacing (`STATE.printPrefs.lineSpacing`, `PRINT_PREFS_DEFAULT`) is a
+separate, already-published setting and wasn't touched.
 
 ### Key/mode picker: now shared between the Chords view and Present
 
