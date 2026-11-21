@@ -370,23 +370,36 @@ the existing `Chords` toggle rather than a new mechanism:
 per-song shape, default `true`) and `#presentLyricsToggle`/
 `#songLyricsToggle` buttons next to `Parts` in both toolbars.
 `filterPresentRows(rows, showChords, showSections, showLyrics)` grew a
-fourth parameter that drops any row whose class list includes
-`row-lyric` — checked with `r.cls.split(' ').includes('row-lyric')`,
-not `r.cls === 'row-lyric'`, because a whole-line YouTube link row is
-`'row-lyric row-link'` (two classes); a strict `===` would silently leave
-link rows showing in chords-only mode. Every existing caller of
-`filterPresentRows()` had to be updated for the new fourth parameter,
-including the two print callers (`renderPrintSongAt()`/
-`searchAutoPrintLayout()`), which now pass a hardcoded `true` — print
-still has no lyrics-only/chords-only concept at all (see below), so
-this just keeps their behavior unchanged rather than silently defaulting
-`showLyrics` to `undefined` (falsy) and hiding lyrics in print by
-accident. Deliberately **not** given its own font-size bucket the way
-chords-hidden gets `'prompter'` — stays on whatever bucket `showChords`
-already picked, the same minimal choice already made for the Chords
-view's own `Chords`/`Parts` toggles above (no evidence yet that
+fourth parameter, checked with `r.cls.split(' ').includes('row-lyric')`
+(not a strict `r.cls === 'row-lyric'`) since a whole-line YouTube link row
+is `'row-lyric row-link'` (two classes) and a strict check would miss it.
+Every existing caller of `filterPresentRows()` had to be updated for the
+new fourth parameter, including the two print callers
+(`renderPrintSongAt()`/`searchAutoPrintLayout()`), which now pass a
+hardcoded `true` — print still has no lyrics-only/chords-only concept at
+all (see below), so this just keeps their behavior unchanged rather than
+silently defaulting `showLyrics` to `undefined` (falsy) and hiding lyrics
+in print by accident. Deliberately **not** given its own font-size bucket
+the way chords-hidden gets `'prompter'` — stays on whatever bucket
+`showChords` already picked, the same minimal choice already made for the
+Chords view's own `Chords`/`Parts` toggles above (no evidence yet that
 chords-only reading wants a different default size than normal reading;
 revisit if that turns out wrong).
+
+**A matching lyric row doesn't just disappear when hidden — it's replaced
+with a faint, periodic `"."` placeholder the same length as the real
+line** (`makeLyricGhostText()`, `.row-lyric-ghost{opacity:.3}` next to the
+existing `.row-chord-melody` opacity-only fade). The first cut genuinely
+dropped lyric rows from the array entirely, matching how hiding chords/
+sections already works — reported back directly as hard to follow:
+consecutive chord lines from different original pairs ran straight into
+each other with nothing between them, since the blank space a lyric row
+used to occupy was gone too, not just its text. A real YouTube-link lyric
+row (`row-lyric row-link`) is the one exception — dropped entirely rather
+than ghosted, since there's no "real line" shape for a dotted placeholder
+to stand in for. Both Chords view and Present pick this up automatically
+through the shared `filterPresentRows()`; print is unaffected since it
+always passes `showLyrics: true`.
 
 Print remains deliberately excluded from all three toggles — same
 reasoning as it being excluded from the key/chord display modes above:
