@@ -829,7 +829,18 @@ const SPECIAL_TOKENS = new Set(['N.C.','NC','%','-','–','—','|','||','|:',':
 // transpose/Nashville/key-change never touched a single chord on it. Shipped
 // for real on a song's Intro bar-notation line -- transposing the song left
 // every other line transposed but that one rendered exactly as typed.
-const MULTI_SLASH_RE = /^\/+$/;
+//
+// A middle dot ("·", U+00B7) shows up as the same kind of standalone hold
+// marker in some charts -- "C · Dm C/E" meaning C held one extra beat, then
+// Dm, then C/E -- a different character from the "." this app already
+// despaces as a glued space-filler (despaceFillerDots(), for "G.C.D7.G"
+// with no surrounding spaces), and from a bare "." by itself, which still
+// isn't a recognized token -- a chart that actually types "." as its own
+// hold marker instead of "·" or "/" would need the same treatment added
+// here. Folded into the same regex as "/" rather than a parallel one, since
+// both mean exactly the same thing and nothing downstream (isChordToken(),
+// the bar-notation simplifier below) needs to tell them apart.
+const MULTI_SLASH_RE = /^[\/·]+$/;
 const REPEAT_COUNT_RE = /^x[0-9]+$/i;
 function baseChordToken(text){
   const m = text.match(CHORD_RE);
@@ -867,6 +878,29 @@ function unwrapParens(text){
 function unwrapAsterisk(text){
   return (text.length > 1 && text[text.length-1]==='*') ? text.slice(0,-1) : null;
 }
+// A chord with a trailing parenthesized annotation glued directly on, e.g.
+// "F2(no3)" (an omit-3rd voicing note) -- different from unwrapParens()
+// above, which requires the parens to wrap the WHOLE token ("(Edim)"); here
+// there's real chord text *before* the parens too, which unwrapParens()'s
+// own length/position check already rules out (it needs text[0] to be
+// "(", not some chord letter). Recognized/transposed as the chord before
+// the parens with the annotation carried through verbatim on display, same
+// principle as unwrapAsterisk() just above. First seen on a real chart's
+// "F2(no3)" and initially just simplified away to plain "F2" when that
+// song was transcribed by hand (no parser support for the shape yet, and
+// it looked like a one-off); it then turned up again, independently
+// retyped the same way by a real editor in the actual live song, at which
+// point "simplify it away in the transcription" stopped being a reasonable
+// answer and this got real support instead. The non-greedy match plus `$`
+// anchor finds the LAST top-level "(...)" group specifically so this never
+// fires on unwrapParens()'s own whole-token case ("(Edim)" has nothing
+// before its paren, so the required non-empty prefix can't match) or on a
+// nested-paren shape (not seen in practice, so not specifically handled
+// beyond "the regex's own character class excludes '(' inside the group").
+function unwrapParenAnnotation(text){
+  const m = text.match(/^(.+?)(\([^()]+\))$/);
+  return m ? { base: m[1], suffix: m[2] } : null;
+}
 // unwrapParens() above only unwraps when BOTH the opening and closing paren
 // land on the SAME token ("(Edim)"). A melody/single-note line split across
 // a bar line commonly glues just one side instead -- the opening paren to
@@ -892,6 +926,16 @@ function isChordToken(text){
   if (inner !== null) return isChordToken(inner);
   const leadInner = unwrapLeadingParen(text);
   if (leadInner !== null) return isChordToken(leadInner);
+  // Checked before unwrapTrailingParen() below, not after -- both can
+  // return non-null for "F2(no3)" (unwrapTrailingParen only sees "ends in
+  // ')', doesn't start with '('" and strips just the final character,
+  // leaving "F2(no3" with its "(" now unmatched, which never passes
+  // baseChordToken() since CHORD_RE's quality class excludes "("), and
+  // every branch here commits to the first non-null unwrap rather than
+  // trying the next one if that recursion fails. Checking the more
+  // specific annotation shape first is what makes this resolve correctly.
+  const annotated = unwrapParenAnnotation(text);
+  if (annotated !== null) return isChordToken(annotated.base);
   const trailInner = unwrapTrailingParen(text);
   if (trailInner !== null) return isChordToken(trailInner);
   const starInner = unwrapAsterisk(text);
@@ -903,6 +947,12 @@ function transposeChord(text, shift, preferFlat){
   if (inner !== null) return '(' + transposeChord(inner, shift, preferFlat) + ')';
   const leadInner = unwrapLeadingParen(text);
   if (leadInner !== null) return '(' + transposeChord(leadInner, shift, preferFlat);
+  // Same ordering requirement as isChordToken() above -- must come before
+  // unwrapTrailingParen(), which would otherwise claim "F2(no3)" first and
+  // strip only the trailing ")", leaving an unmatched "(" that never
+  // transposes.
+  const annotated = unwrapParenAnnotation(text);
+  if (annotated !== null) return transposeChord(annotated.base, shift, preferFlat) + annotated.suffix;
   const trailInner = unwrapTrailingParen(text);
   if (trailInner !== null) return transposeChord(trailInner, shift, preferFlat) + ')';
   const starInner = unwrapAsterisk(text);
@@ -922,6 +972,9 @@ function toNashville(text, baseSemitone){
   if (inner !== null) return '(' + toNashville(inner, baseSemitone) + ')';
   const leadInner = unwrapLeadingParen(text);
   if (leadInner !== null) return '(' + toNashville(leadInner, baseSemitone);
+  // Same ordering requirement as isChordToken()/transposeChord() above.
+  const annotated = unwrapParenAnnotation(text);
+  if (annotated !== null) return toNashville(annotated.base, baseSemitone) + annotated.suffix;
   const trailInner = unwrapTrailingParen(text);
   if (trailInner !== null) return toNashville(trailInner, baseSemitone) + ')';
   const starInner = unwrapAsterisk(text);

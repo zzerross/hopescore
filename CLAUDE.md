@@ -1013,6 +1013,60 @@ now fixed, but worth understanding why):
   chord-shaped tokens, the same symptom this whole bug class produces) —
   came back empty, so no other song in the seed library was silently
   hitting this one.
+
+  A fifth gap, same bug class, turned up from the real, live "Jesus at the
+  Center" song after an editor retyped its chart to include notation this
+  app's parser still didn't support -- two unrelated shapes, both on the
+  same song:
+  1. A middle dot (`"·"`, U+00B7) used as a standalone hold marker in the
+     Intro's bar notation (`"C · Dm C/E"` -- C held one extra beat, then
+     Dm, then C/E), the exact same *meaning* as the already-supported `"/"`
+     hold (`MULTI_SLASH_RE`), just a different character -- not the glued
+     `"."` space-filler `despaceFillerDots()` already handles (that's for
+     a dot glued directly to surrounding text with no spaces, like
+     `"G.C.D7.G"`; this is its own whitespace-delimited token). Fixed by
+     folding `"·"` into `MULTI_SLASH_RE` itself (`/^[\/·]+$/` instead of
+     `/^\/+$/`) rather than a parallel regex, since isChordToken() and the
+     bar-notation simplifier only ever check *whether* a token is a hold,
+     never which character it's made of.
+  2. `"F2(no3)"` -- a trailing parenthesized annotation (an omit-3rd
+     voicing note) glued directly onto an otherwise-valid chord, with real
+     chord text *before* the parens. This exact shape was already known
+     from the mozfiles PDF transcription (see the Publish-flow section
+     above for how that song came to exist) and was simplified away to
+     plain `"F2"` at the time, on the theory that it was a one-off voicing
+     detail not worth extending the parser for. It then turned up again,
+     independently retyped the same way by a real editor in the actual
+     live "Jesus at the Center" entry, at which point "simplify it away"
+     stopped being a reasonable answer. Fixed with `unwrapParenAnnotation()`
+     (next to `unwrapAsterisk()`, same principle: recognize the chord
+     before the annotation, transpose/Nashville-convert it, carry the
+     annotation through verbatim on display) -- `"F2(no3)"` transposed +2
+     becomes `"G2(no3)"`, and in Nashville numbers becomes `"4-2(no3)"`
+     (the digit-separator fix documented earlier in this file already
+     applies here too, same code path). **Has to be checked before
+     `unwrapTrailingParen()` in `isChordToken()`/`transposeChord()`/
+     `toNashville()`, not after** -- every branch in those three functions
+     commits to the first unwrap helper that returns non-null rather than
+     trying the next one if that recursion fails, and `unwrapTrailingParen()`
+     also matches `"F2(no3)"` (it only checks "ends in `)`, doesn't start
+     with `(`"), stripping just the final character and leaving `"F2(no3"`
+     with its own `"("` now unmatched -- which can never pass `CHORD_RE`
+     (its quality character class excludes `"("`), so the whole token
+     would keep failing to recognize it with the fix's own code present
+     but ordered wrong. Confirmed by checking the two unwrap functions
+     really do collide this way, not just inferring it.
+
+  Verified with direct unit checks (`isChordToken('F2(no3)')`,
+  `isChordToken('·')`, transposing and Nashville-converting `"F2(no3)"`)
+  and a full-library audit comparing `parseBody()` output before and
+  after, keyed by song id (not title again -- see the sixth-shape entry
+  above for why) -- the only difference anywhere in the library was the
+  intended one: every line in "Jesus at the Center" that used to drop to
+  `lyricOnly` because of these two shapes (the whole Intro, every Bridge
+  1A/1B/Interlude line with `"F2(no3)"` on it) now parses as a proper
+  `chordOnly`/`pair` block, confirmed rendered correctly in the actual
+  Chords view, not just the standalone token functions.
 - **YouTube embeds use `youtube.com`, not `youtube-nocookie.com`, on
   purpose.** The privacy-enhanced `-nocookie` domain withholds the
   viewer's own YouTube session from the embed by design, which means a
