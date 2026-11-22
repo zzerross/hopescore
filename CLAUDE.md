@@ -386,20 +386,30 @@ Chords view's own `Chords`/`Parts` toggles above (no evidence yet that
 chords-only reading wants a different default size than normal reading;
 revisit if that turns out wrong).
 
-**A matching lyric row doesn't just disappear when hidden — it's replaced
-with a faint, periodic `"."` placeholder the same length as the real
-line** (`makeLyricGhostText()`, `.row-lyric-ghost{opacity:.3}` next to the
-existing `.row-chord-melody` opacity-only fade). The first cut genuinely
-dropped lyric rows from the array entirely, matching how hiding chords/
-sections already works — reported back directly as hard to follow:
-consecutive chord lines from different original pairs ran straight into
-each other with nothing between them, since the blank space a lyric row
-used to occupy was gone too, not just its text. A real YouTube-link lyric
-row (`row-lyric row-link`) is the one exception — dropped entirely rather
-than ghosted, since there's no "real line" shape for a dotted placeholder
-to stand in for. Both Chords view and Present pick this up automatically
-through the shared `filterPresentRows()`; print is unaffected since it
-always passes `showLyrics: true`.
+**Hiding lyrics leaves bare chord lines hard to read — with no lyric
+line's spacing underneath to anchor the eye, a wide run of plain blank
+space between two chords (`"C            Dm7"`) gives no visual cue of
+how much space is really there.** A first cut tried keeping the lyric row
+around as a faint, periodic `"."` placeholder instead of dropping it
+(`makeLyricGhostText()`) — corrected directly: the whole point was to
+*remove* the lyric line for a small screen, not decorate it, so dotting
+it was solving the wrong row. The real fix dots the **chord** line's own
+gaps in place instead: `dottedChordGapsHtml()` (next to `rowToLineEl()`)
+walks the chord row's text and turns every 3rd space character (counted
+across the whole line, not reset per gap) into a `.chord-gap-dot`-wrapped
+`"."`, leaving every other character — the chord text itself — untouched
+(just HTML-escaped); `.chord-gap-dot{opacity:.35}` fades the dots to read
+as a spacing guide, not part of the chord name. `filterPresentRows()`
+drops lyric rows entirely when `showLyrics` is false (a whole-line
+YouTube link row included — no special case needed there anymore) and
+sets a `gapDots` flag on `row-chord` rows instead; `rowToLineEl()` checks
+that flag to render via `dottedChordGapsHtml()`'s HTML instead of plain
+`textContent`. `wrapRows()`'s single-long-row wrap branch has to carry
+`gapDots` through onto each wrapped segment the same way it already
+carries `melody` — the same trap documented for `melody` above, just
+with a second field now. Both Chords view and Present pick this up
+automatically through the shared `filterPresentRows()`; print is
+unaffected since it always passes `showLyrics: true`.
 
 Print remains deliberately excluded from all three toggles — same
 reasoning as it being excluded from the key/chord display modes above:

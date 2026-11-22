@@ -344,15 +344,17 @@
      per theme. */
   .row-chord-melody{ opacity:.62; }
   .row-lyric{ color:var(--ink); font-weight:400; }
-  /* Chords-only mode (Lyrics toggle off) doesn't drop a lyric row entirely
-     -- it's replaced with a periodic "." placeholder (see
-     makeLyricGhostText()) so consecutive chord lines still read as
-     separate lines instead of running together with nothing between them.
-     One opacity rule, same reasoning as .row-chord-melody above -- just
-     fades whatever .row-lyric's color already resolved to, no separate
-     color per theme needed. Fainter than the melody fade (.62) since this
-     is a pure layout guide, not real content to read. */
-  .row-lyric-ghost{ opacity:.3; }
+  /* Chords-only mode (Lyrics toggle off) drops lyric rows entirely -- see
+     filterPresentRows() -- which left bare chord lines hard to read: with
+     no lyric line's spacing underneath to anchor the eye, a wide gap of
+     plain blank space between two chords ("C            Dm7") gave no
+     visual cue of how much space was really there. Fixed not by adding a
+     placeholder row back (tried first, corrected directly: the ask was
+     specifically to remove the lyric line, not dot it) but by dotting the
+     CHORD line's own blank gaps in place -- see dottedChordGapsHtml().
+     The dots themselves render in this fainter span so they read as a
+     spacing guide, not part of the chord text itself. */
+  .chord-gap-dot{ opacity:.35; }
   .row-blank{ height:.85em; }
   .row-link{ white-space:normal; word-break:break-all; }
   .row-link a{ color:var(--accent); text-decoration:underline; }
@@ -3676,6 +3678,29 @@ function openKeyModeModal(prefs, onchange){
   paint();
   modalBackdrop.classList.add('open');
 }
+// Converts a chord line's plain-space gaps into a periodic "." guide --
+// only space characters are touched (every 3rd space becomes a dot,
+// counted across the whole line rather than reset per gap), the chord
+// text itself passed through completely unchanged (just HTML-escaped).
+// Each dot is wrapped in its own `.chord-gap-dot` span so it renders
+// faint (see that class's CSS) instead of looking like part of the chord
+// name. Used only via rowToLineEl()'s `r.gapDots` flag, which
+// filterPresentRows() sets on chord rows in chords-only mode (Lyrics
+// toggle off) -- with the lyric line gone, there's nothing left to anchor
+// the eye to how wide a gap between two chords really is.
+function dottedChordGapsHtml(text){
+  let html = '';
+  let spaceCount = 0;
+  for (const ch of text){
+    if (ch === ' '){
+      spaceCount++;
+      html += (spaceCount % 3 === 0) ? '<span class="chord-gap-dot">.</span>' : ' ';
+    } else {
+      html += escapeHtml(ch);
+    }
+  }
+  return html;
+}
 function rowToLineEl(r){
   const div = document.createElement('div');
   div.className = 'line ' + r.cls + (r.melody ? ' row-chord-melody' : '');
@@ -3684,6 +3709,8 @@ function rowToLineEl(r){
     a.href = r.href; a.target = '_blank'; a.rel = 'noopener noreferrer';
     a.textContent = r.text || r.href;
     div.appendChild(a);
+  } else if (r.gapDots){
+    div.innerHTML = dottedChordGapsHtml(r.text || ' ');
   } else {
     div.textContent = r.text || ' ';
   }
@@ -3813,7 +3840,11 @@ function wrapRows(rows, maxChars){
     // wraps instead via its own CSS (white-space: normal), so it never needs
     // to be split here to fit a column width.
     if (!r.href && r.cls !== 'row-blank' && (r.text||'').length > maxChars){
-      for (const [seg] of wrapAligned(r.text, '', maxChars)) out.push({cls:r.cls, text:seg, melody:r.melody});
+      // gapDots carried through same as melody just above -- a wrapped
+      // continuation segment of a chords-only chord row needs the same
+      // dotted-gap rendering its unwrapped original would have gotten
+      // (see rowToLineEl()/dottedChordGapsHtml()), not plain text.
+      for (const [seg] of wrapAligned(r.text, '', maxChars)) out.push({cls:r.cls, text:seg, melody:r.melody, gapDots:r.gapDots});
     } else {
       out.push(r);
     }
@@ -5253,17 +5284,6 @@ function closePresent(){
 // the title/description rows -- they're either shown separately (title,
 // in the topbar) or just clutter for someone reading lyrics off a screen
 // -- while Parts off only ever touches section labels.
-// A periodic "." placeholder the same length as the real lyric line it
-// replaces -- chords-only mode (Lyrics toggle off) used to just drop the
-// lyric row entirely, which read as hard to follow: with nothing between
-// them, consecutive chord lines from different original pairs ran
-// straight into each other with no visual break. Reported directly, fixed
-// by keeping a faint line-shaped placeholder instead of removing the row.
-function makeLyricGhostText(text){
-  let out = '';
-  for (let i = 0; i < text.length; i++) out += (i % 3 === 2) ? '.' : ' ';
-  return out;
-}
 function filterPresentRows(rows, showChords, showSections, showLyrics){
   const out = [];
   for (const r of rows){
@@ -5274,16 +5294,17 @@ function filterPresentRows(rows, showChords, showSections, showLyrics){
     // strict `===` so chords-only mode catches that too; showChords/
     // showSections above never need this since chord/section rows are
     // never combined with a second class.
-    const classes = r.cls.split(' ');
-    if (!showLyrics && classes.includes('row-lyric')){
-      // A link row has nothing a dotted placeholder would meaningfully
-      // stand in for -- drop it entirely, same as every row class did
-      // before this placeholder existed.
-      if (classes.includes('row-link')) continue;
-      out.push({ ...r, cls: r.cls + ' row-lyric-ghost', text: makeLyricGhostText(r.text) });
-      continue;
-    }
-    out.push(r);
+    if (!showLyrics && r.cls.split(' ').includes('row-lyric')) continue;
+    // Chords-only mode (lyrics just dropped above) loses the lyric line's
+    // spacing as a visual anchor for how wide a gap between two chords
+    // really is -- a first cut tried keeping a dotted placeholder row in
+    // the lyric's place instead of dropping it, which was corrected
+    // directly: the point was to remove the lyric line, not decorate it.
+    // Dotting the CHORD line's own gaps in place (gapDots, read by
+    // rowToLineEl()/dottedChordGapsHtml()) is what was actually asked
+    // for.
+    if (!showLyrics && r.cls==='row-chord') out.push({ ...r, gapDots: true });
+    else out.push(r);
   }
   return out;
 }
