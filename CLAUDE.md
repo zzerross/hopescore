@@ -670,6 +670,48 @@ land as two separate undo steps, so undoing once reveals the original
 clipboard text to inspect or fix by hand if the heuristic ever guesses
 wrong, and a second `Ctrl+Z` goes back to before the paste entirely.
 
+### A line split across two raw body rows isn't always `fixPastedChordArtifact()`'s job
+
+Reported for real on "Always On Time": "Jesus, I was tossed in the **water**" and
+"Jesus, when I went through the **fire**" each rendered as two separate
+lines instead of one, the last word landing on its own row. The stored
+`body` genuinely had it that way — `" F "` / `"Jesus, I was tossed in the "`
+/ `"Cm "` / `"water "` as four consecutive raw lines, each chord-then-
+fragment pair already a perfectly valid, independently-correct `pair`
+block on its own. That's *not* the shape `fixPastedChordArtifact()`
+targets — its gates specifically require a fragment/chord/fragment
+pattern (one lyric line broken by a chord landing mid-word) and a fresh
+row boundary to start a reconstruction group; two already-well-formed
+chord+lyric pairs sitting back to back, where the *sentence* just happens
+to continue from one pair's lyric into the next's, isn't something that
+function is wrong to leave alone — there's no artifact to detect, just a
+sentence someone transcribed with a line break at every chord change
+instead of keeping each full sung line together. Confirmed by running
+`fixPastedChordArtifact()` directly against the live (broken) body: it
+correctly reported no change.
+
+Fixed by hand: merge the two fragments into one lyric line, and shift the
+second chord to land at the column where its fragment now starts within
+the combined line (the first chord keeps its original column — only the
+second one moves). A full-library audit for the same shape (a `pair`
+block whose lyric is one short word, sitting right after another `pair`
+whose lyric doesn't end in sentence punctuation) turned up seven more
+instances in "Here in Your Presence" (`"...here in Your"` / `"presence"`,
+`"...are standing"` / `"amazed"`, `"...Heaven and Earth"` / `"become one"`,
+`"...bows before"` / `"You"`, the last two repeated across both Choruses)
+— same root cause, same fix. It also flagged "Worthy is Your Name"
+(`"Worthy is your name"` / `"Jesus"`, twice), which turned out to be a
+real, intentional call-and-response structure in that actual song (a
+distinct "Jesus!" exclamation after a pause, not a continued sentence) and
+was deliberately left alone — the heuristic that finds candidates
+("short word right after a pair") isn't proof of damage by itself; each
+hit still needs reading in context before merging it. If this shape
+surfaces again, check whether `fixPastedChordArtifact()` really should
+have caught it (did a chord land *mid-word* inside one continuous
+fragment?) before assuming it's the same bug class as this file's other
+documented parsing traps — this one wasn't a parsing bug at all, just
+data that needed a human read.
+
 ### Publish flow
 
 An "editor" is just a device that has a GitHub personal access token and a
